@@ -1,14 +1,24 @@
 package io.github.z2549.anycycle
 
+import android.content.ComponentName
+import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,27 +39,42 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -59,6 +84,9 @@ import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import io.github.z2549.anycycle.ui.theme.AnyCyCleTheme
 import io.github.z2549.anycycle.xposed.AnyCyCleConfig
+import io.github.z2549.anycycle.xposed.AnyCyCleConfig.defaultRulesSim1
+import io.github.z2549.anycycle.xposed.AnyCyCleConfig.defaultRulesSim2
+import io.github.z2549.anycycle.xposed.AnyCyCleConfig.defaultRulesWifi
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -68,14 +96,26 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             AnyCyCleTheme {
-                SettingsScreen()
+                RootScreen()
             }
         }
     }
 }
 
+// ------------------------------------------------------------------
+// 根结构：顶栏（含重启 SystemUI）+ 页面切换 + 底部导航
+// ------------------------------------------------------------------
+
+private const val PAGE_HOME = 0
+private const val PAGE_WIFI = 1
+private const val PAGE_SIM1 = 2
+private const val PAGE_SIM2 = 3
+
 @Composable
-fun SettingsScreen() {
+fun RootScreen() {
+    val context = LocalContext.current
+    var page by remember { mutableStateOf(PAGE_HOME) }
+
     var prefs by remember { mutableStateOf<SharedPreferences?>(null) }
     var serviceBound by remember { mutableStateOf(false) }
     var cfg by remember { mutableStateOf(AnyCyCleConfig.defaults()) }
@@ -89,6 +129,8 @@ fun SettingsScreen() {
                     prefs = p
                     migrateV11(p)
                     cfg = AnyCyCleConfig.read(p)
+                    // 桌面图标隐藏状态与配置同步（App 重装/数据清理后自动纠正）
+                    applyHideLauncher(context, cfg.hideLauncher)
                     p.registerOnSharedPreferenceChangeListener { sp, _ ->
                         cfg = AnyCyCleConfig.read(sp)
                     }
@@ -125,10 +167,18 @@ fun SettingsScreen() {
         if (p != null) AnyCyCleConfig.writeRing(p, ringKey, sorted)
     }
 
-    /** 设置嵌套顺序第 slot 槽位（0=内环）为环 id，保证整体仍是合法排列 */
+    /** 设置嵌套顺序第 slot 槽位（0=内环）为环 id：与该槽位原环对调，恒为合法排列 */
     fun setOrderSlot(slot: Int, id: String) {
-        val newOrder = cfg.ringOrder.toMutableList().also {
-            if (slot < it.size) it[slot] = id else it.add(id)
+        val newOrder = cfg.ringOrder.toMutableList()
+        val oldIdx = newOrder.indexOf(id)
+        val replaced = if (slot < newOrder.size) newOrder[slot] else AnyCyCleConfig.RING_WIFI_ID
+        if (oldIdx >= 0 && oldIdx != slot) {
+            newOrder[oldIdx] = replaced
+        }
+        if (slot < newOrder.size) {
+            newOrder[slot] = id
+        } else {
+            newOrder.add(id)
         }
         cfg = cfg.copy(ringOrder = newOrder)
         commit { it.putString(AnyCyCleConfig.KEY_RING_ORDER, newOrder.joinToString(",")) }
@@ -138,33 +188,160 @@ fun SettingsScreen() {
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .navigationBarsPadding()
+            .navigationBarsPadding(),
+    ) {
+        // ---------------- 顶栏 ----------------
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "AnyCyCle 设置",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = { restartSystemUi(context) }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "重启系统界面")
+            }
+        }
+
+        // ---------------- 页面主体 ----------------
+        Box(modifier = Modifier.weight(1f)) {
+            when (page) {
+                PAGE_HOME -> HomePage(
+                    cfg = cfg,
+                    serviceBound = serviceBound,
+                    commit = { b -> commit(b) },
+                    setOrderSlot = { s, id -> setOrderSlot(s, id) },
+                )
+                PAGE_WIFI -> RingPage("WiFi 环", cfg.wifi, serviceBound) {
+                    updateRing(AnyCyCleConfig.KEY_RING_WIFI, it)
+                }
+                PAGE_SIM1 -> RingPage("SIM 卡 1 环", cfg.sim1, serviceBound) {
+                    updateRing(AnyCyCleConfig.KEY_RING_SIM1, it)
+                }
+                else -> RingPage("SIM 卡 2 环", cfg.sim2, serviceBound) {
+                    updateRing(AnyCyCleConfig.KEY_RING_SIM2, it)
+                }
+            }
+        }
+
+        // ---------------- 底部导航 ----------------
+        NavigationBar {
+            NavigationBarItem(
+                selected = page == PAGE_HOME,
+                onClick = { page = PAGE_HOME },
+                icon = { Text("总", fontSize = 15.sp) },
+                label = { Text("主页", fontSize = 11.sp) },
+            )
+            NavigationBarItem(
+                selected = page == PAGE_WIFI,
+                onClick = { page = PAGE_WIFI },
+                icon = { Text("W", fontSize = 15.sp) },
+                label = { Text("WiFi", fontSize = 11.sp) },
+            )
+            NavigationBarItem(
+                selected = page == PAGE_SIM1,
+                onClick = { page = PAGE_SIM1 },
+                icon = { Text("1", fontSize = 15.sp) },
+                label = { Text("SIM 1", fontSize = 11.sp) },
+            )
+            NavigationBarItem(
+                selected = page == PAGE_SIM2,
+                onClick = { page = PAGE_SIM2 },
+                icon = { Text("2", fontSize = 15.sp) },
+                label = { Text("SIM 2", fontSize = 11.sp) },
+            )
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// 主页：总开关 + 通用设置 + 应用功能
+// ------------------------------------------------------------------
+
+@Composable
+private fun HomePage(
+    cfg: AnyCyCleConfig.Cfg,
+    serviceBound: Boolean,
+    commit: ((SharedPreferences.Editor) -> Unit) -> Unit,
+    setOrderSlot: (Int, String) -> Unit,
+) {
+    val context = LocalContext.current
+
+    fun toast(msg: String) {
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    // ---------------- 备份：SAF 导入 / 导出 ----------------
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val json = buildExportJson(cfg)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(json.toByteArray(Charsets.UTF_8))
+                } ?: throw IllegalStateException("无法打开输出流")
+                toast("配置已导出")
+            } catch (t: Throwable) {
+                toast("导出失败: ${t.message}")
+            }
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val text = context.contentResolver.openInputStream(uri)?.use { inStream ->
+                    inStream.bufferedReader().readText()
+                } ?: throw IllegalStateException("无法读取文件")
+                val keys = importJson(text)
+                commit { e ->
+                    keys.forEach { (k, v) ->
+                        when (v) {
+                            is Boolean -> e.putBoolean(k, v)
+                            is Int -> e.putInt(k, v)
+                            is Float -> e.putFloat(k, v)
+                            is String -> e.putString(k, v)
+                        }
+                    }
+                }
+                toast("配置已导入（${keys.size} 项）")
+            } catch (t: Throwable) {
+                toast("导入失败: ${t.message}")
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            text = "AnyCyCle 设置",
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Bold,
-        )
-
         // ---------------- 连接状态 ----------------
         if (!serviceBound) {
             StatusCard(
                 title = "未连接到 Xposed 服务",
-                detail = "请在 LSPosed 中启用本模块，然后重启\"系统界面\"。未连接时以下设置仅显示默认值且不可编辑。",
+                detail = "请在 LSPosed 中启用本模块，然后点击右上角按钮重启\"系统界面\"。未连接时以下设置仅显示默认值且不可编辑。",
                 error = true,
             )
         } else {
             StatusCard(
                 title = "已连接 Xposed 服务",
-                detail = "配置通过 RemotePreferences 实时写入 SystemUI 进程。",
+                detail = "配置通过 RemotePreferences 实时写入 SystemUI 进程；各环详细设置在底部导航的 WiFi / SIM 1 / SIM 2 页。",
                 error = false,
             )
         }
 
-        // ---------------- 启用开关 ----------------
+        // ---------------- 总开关 ----------------
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 SwitchRow(
@@ -173,7 +350,6 @@ fun SettingsScreen() {
                     checked = cfg.enabled,
                     enabled = serviceBound,
                 ) { v ->
-                    cfg = cfg.copy(enabled = v)
                     commit { it.putBoolean(AnyCyCleConfig.KEY_ENABLED, v) }
                 }
             }
@@ -186,46 +362,19 @@ fun SettingsScreen() {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text("显示内容", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                SwitchRow(
-                    label = "WiFi（默认）",
-                    detail = null,
-                    checked = (cfg.displayMask and AnyCyCleConfig.BIT_WIFI) != 0,
-                    enabled = serviceBound,
-                ) { on ->
-                    val newMask = if (on) {
-                        cfg.displayMask or AnyCyCleConfig.BIT_WIFI
-                    } else {
-                        cfg.displayMask and AnyCyCleConfig.BIT_WIFI.inv()
-                    }
-                    cfg = cfg.copy(displayMask = newMask)
+                SwitchMaskRow(cfg, AnyCyCleConfig.BIT_WIFI, "WiFi（默认）", serviceBound) { v ->
+                    val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_WIFI
+                    else cfg.displayMask and AnyCyCleConfig.BIT_WIFI.inv()
                     commit { it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask) }
                 }
-                SwitchRow(
-                    label = "SIM 卡 1",
-                    detail = null,
-                    checked = (cfg.displayMask and AnyCyCleConfig.BIT_SIM1) != 0,
-                    enabled = serviceBound,
-                ) { on ->
-                    val newMask = if (on) {
-                        cfg.displayMask or AnyCyCleConfig.BIT_SIM1
-                    } else {
-                        cfg.displayMask and AnyCyCleConfig.BIT_SIM1.inv()
-                    }
-                    cfg = cfg.copy(displayMask = newMask)
+                SwitchMaskRow(cfg, AnyCyCleConfig.BIT_SIM1, "SIM 卡 1", serviceBound) { v ->
+                    val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_SIM1
+                    else cfg.displayMask and AnyCyCleConfig.BIT_SIM1.inv()
                     commit { it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask) }
                 }
-                SwitchRow(
-                    label = "SIM 卡 2",
-                    detail = null,
-                    checked = (cfg.displayMask and AnyCyCleConfig.BIT_SIM2) != 0,
-                    enabled = serviceBound,
-                ) { on ->
-                    val newMask = if (on) {
-                        cfg.displayMask or AnyCyCleConfig.BIT_SIM2
-                    } else {
-                        cfg.displayMask and AnyCyCleConfig.BIT_SIM2.inv()
-                    }
-                    cfg = cfg.copy(displayMask = newMask)
+                SwitchMaskRow(cfg, AnyCyCleConfig.BIT_SIM2, "SIM 卡 2", serviceBound) { v ->
+                    val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_SIM2
+                    else cfg.displayMask and AnyCyCleConfig.BIT_SIM2.inv()
                     commit { it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask) }
                 }
                 Text(
@@ -248,11 +397,10 @@ fun SettingsScreen() {
             Column(modifier = Modifier.padding(16.dp)) {
                 SwitchRow(
                     label = "隐藏原版图标",
-                    detail = "启用后，按 HyperCeiler 的方式隐藏状态栏中与显示环对应的原版图标（选 WiFi 隐藏 WiFi 图标，选 SIM 卡隐藏信号图标）",
+                    detail = "隐藏状态栏中与显示环对应的原版图标。切换后若未立即生效，请点右上角重启\"系统界面\"。",
                     checked = cfg.hideIcons,
                     enabled = serviceBound,
                 ) { v ->
-                    cfg = cfg.copy(hideIcons = v)
                     commit { it.putBoolean(AnyCyCleConfig.KEY_HIDE_ICONS, v) }
                 }
             }
@@ -273,7 +421,6 @@ fun SettingsScreen() {
                     unit = "dp",
                     enabled = serviceBound,
                 ) { v ->
-                    cfg = cfg.copy(cutoutExtraDp = v)
                     commit { it.putFloat(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, v) }
                 }
                 Text(
@@ -289,7 +436,6 @@ fun SettingsScreen() {
                     unit = "dp",
                     enabled = serviceBound,
                 ) { v ->
-                    cfg = cfg.copy(offsetXDp = v)
                     commit { it.putFloat(AnyCyCleConfig.KEY_OFFSET_X_DP, v) }
                 }
                 SliderRow(
@@ -300,36 +446,279 @@ fun SettingsScreen() {
                     unit = "dp",
                     enabled = serviceBound,
                 ) { v ->
-                    cfg = cfg.copy(offsetYDp = v)
                     commit { it.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, v) }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
             }
         }
 
-        // ---------------- 三个环的设置 ----------------
-        RingCard(
-            title = "WiFi 环",
-            ring = cfg.wifi,
-            controlsEnabled = serviceBound,
-        ) { updateRing(AnyCyCleConfig.KEY_RING_WIFI, it) }
-        RingCard(
-            title = "SIM 卡 1 环",
-            ring = cfg.sim1,
-            controlsEnabled = serviceBound,
-        ) { updateRing(AnyCyCleConfig.KEY_RING_SIM1, it) }
-        RingCard(
-            title = "SIM 卡 2 环",
-            ring = cfg.sim2,
-            controlsEnabled = serviceBound,
-        ) { updateRing(AnyCyCleConfig.KEY_RING_SIM2, it) }
+        // ---------------- 环间分割线 ----------------
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("环间分割线", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                SwitchRow(
+                    label = "启用分割线",
+                    detail = "在相邻两环之间画一圈细线，区分紧贴的环",
+                    checked = cfg.dividerWidthDp > 0f,
+                    enabled = serviceBound,
+                ) { v ->
+                    commit {
+                        it.putFloat(
+                            AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP,
+                            if (v) 1.5f else 0f,
+                        )
+                    }
+                }
+                if (cfg.dividerWidthDp > 0f) {
+                    SliderRow(
+                        label = "分割线粗细",
+                        value = cfg.dividerWidthDp,
+                        range = AnyCyCleConfig.DIVIDER_MIN_DP..AnyCyCleConfig.DIVIDER_MAX_DP,
+                        decimals = 1,
+                        unit = "dp",
+                        enabled = serviceBound,
+                    ) { v ->
+                        commit { it.putFloat(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, v) }
+                    }
+                    ColorPickRow(
+                        label = "分割线颜色",
+                        current = cfg.dividerColor,
+                        enabled = serviceBound,
+                    ) { c ->
+                        commit { it.putInt(AnyCyCleConfig.KEY_DIVIDER_COLOR, c) }
+                    }
+                }
+            }
+        }
+
+        // ---------------- 应用功能 ----------------
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("应用", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                SwitchRow(
+                    label = "隐藏桌面图标",
+                    detail = "隐藏后可从 LSPosed 管理器的模块页面重新打开设置。",
+                    checked = cfg.hideLauncher,
+                    enabled = serviceBound,
+                ) { v ->
+                    commit { it.putBoolean(AnyCyCleConfig.KEY_HIDE_LAUNCHER, v) }
+                    applyHideLauncher(context, v)
+                    toast(
+                        if (v) "桌面图标已隐藏，可从 LSPosed 管理器重新打开"
+                        else "桌面图标已恢复显示",
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            exportLauncher.launch("anycycle-backup-${System.currentTimeMillis()}.json")
+                        },
+                        enabled = serviceBound,
+                    ) { Text("导出配置") }
+                    OutlinedButton(
+                        onClick = {
+                            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        },
+                        enabled = serviceBound,
+                    ) { Text("导入配置") }
+                }
+                OutlinedButton(
+                    onClick = {
+                        commit { e -> resetDefaults(e) }
+                        applyHideLauncher(context, false)
+                        toast("已恢复默认配置")
+                    },
+                    enabled = serviceBound,
+                ) { Text("恢复默认") }
+            }
+        }
 
         // ---------------- 提示 ----------------
         StatusCard(
             title = "提示",
-            detail = "所有参数即时生效，无需重启系统界面；更改显示内容后，状态栏中原版图标的隐藏状态会同步切换。",
+            detail = "所有参数即时生效，无需重启系统界面；隐藏图标等少数状态相关设置切换后，可点右上角按钮重启\"系统界面\"强制刷新。",
             error = false,
         )
+    }
+}
+
+/** 显示内容开关行（cfg 内部读取当前位） */
+@Composable
+private fun SwitchMaskRow(
+    cfg: AnyCyCleConfig.Cfg,
+    bit: Int,
+    label: String,
+    enabled: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    SwitchRow(
+        label = label,
+        detail = null,
+        checked = (cfg.displayMask and bit) != 0,
+        enabled = enabled,
+        onChange = onChange,
+    )
+}
+
+// ------------------------------------------------------------------
+// 环详情页（WiFi / SIM1 / SIM2 共用）
+// ------------------------------------------------------------------
+
+@Composable
+private fun RingPage(
+    title: String,
+    ring: AnyCyCleConfig.RingCfg,
+    controlsEnabled: Boolean,
+    onUpdate: (AnyCyCleConfig.RingCfg) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        RingCard(title = title, ring = ring, controlsEnabled = controlsEnabled, onUpdate = onUpdate)
+    }
+}
+
+// ------------------------------------------------------------------
+// 备份 / 恢复默认
+// ------------------------------------------------------------------
+
+private fun buildExportJson(cfg: AnyCyCleConfig.Cfg): String {
+    val settings = org.json.JSONObject()
+        .put(AnyCyCleConfig.KEY_ENABLED, cfg.enabled)
+        .put(AnyCyCleConfig.KEY_DISPLAY_MASK, cfg.displayMask)
+        .put(AnyCyCleConfig.KEY_HIDE_ICONS, cfg.hideIcons)
+        .put(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, cfg.cutoutExtraDp.toDouble())
+        .put(AnyCyCleConfig.KEY_RING_ORDER, cfg.ringOrder.joinToString(","))
+        .put(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, cfg.dividerWidthDp.toDouble())
+        .put(AnyCyCleConfig.KEY_DIVIDER_COLOR, cfg.dividerColor)
+        .put(AnyCyCleConfig.KEY_HIDE_LAUNCHER, cfg.hideLauncher)
+        .put(AnyCyCleConfig.KEY_OFFSET_X_DP, cfg.offsetXDp.toDouble())
+        .put(AnyCyCleConfig.KEY_OFFSET_Y_DP, cfg.offsetYDp.toDouble())
+    val rings = org.json.JSONObject()
+        .put("wifi", org.json.JSONObject(AnyCyCleConfig.ringToJson(cfg.wifi)))
+        .put("sim1", org.json.JSONObject(AnyCyCleConfig.ringToJson(cfg.sim1)))
+        .put("sim2", org.json.JSONObject(AnyCyCleConfig.ringToJson(cfg.sim2)))
+    return org.json.JSONObject()
+        .put("app", "AnyCyCle")
+        .put("version", 2)
+        .put("settings", settings)
+        .put("rings", rings)
+        .toString(2)
+}
+
+/** 解析备份 JSON，返回 键 -> 值 的扁平映射（含三环 JSON 字符串）；格式非法抛异常 */
+private fun importJson(text: String): Map<String, Any> {
+    val root = org.json.JSONObject(text)
+    if (root.optString("app") != "AnyCyCle") throw IllegalArgumentException("不是 AnyCyCle 的备份文件")
+    val out = LinkedHashMap<String, Any>()
+    val settings = root.optJSONObject("settings")
+    if (settings != null) {
+        out[AnyCyCleConfig.KEY_ENABLED] = settings.optBoolean(AnyCyCleConfig.KEY_ENABLED, AnyCyCleConfig.DEFAULT_ENABLED)
+        out[AnyCyCleConfig.KEY_DISPLAY_MASK] = settings.optInt(AnyCyCleConfig.KEY_DISPLAY_MASK, AnyCyCleConfig.DEFAULT_DISPLAY_MASK)
+        out[AnyCyCleConfig.KEY_HIDE_ICONS] = settings.optBoolean(AnyCyCleConfig.KEY_HIDE_ICONS, AnyCyCleConfig.DEFAULT_HIDE_ICONS)
+        out[AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP] = settings.optDouble(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, 0.0).toFloat()
+        out[AnyCyCleConfig.KEY_RING_ORDER] = settings.optString(AnyCyCleConfig.KEY_RING_ORDER, AnyCyCleConfig.DEFAULT_RING_ORDER)
+        out[AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP] = settings.optDouble(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, 0.0).toFloat()
+        out[AnyCyCleConfig.KEY_DIVIDER_COLOR] = settings.optInt(AnyCyCleConfig.KEY_DIVIDER_COLOR, AnyCyCleConfig.DEFAULT_DIVIDER_COLOR)
+        out[AnyCyCleConfig.KEY_HIDE_LAUNCHER] = settings.optBoolean(AnyCyCleConfig.KEY_HIDE_LAUNCHER, false)
+        out[AnyCyCleConfig.KEY_OFFSET_X_DP] = settings.optDouble(AnyCyCleConfig.KEY_OFFSET_X_DP, 0.0).toFloat()
+        out[AnyCyCleConfig.KEY_OFFSET_Y_DP] = settings.optDouble(AnyCyCleConfig.KEY_OFFSET_Y_DP, 0.0).toFloat()
+    }
+    val rings = root.optJSONObject("rings")
+    if (rings != null) {
+        val wifi = rings.optJSONObject("wifi")
+        val sim1 = rings.optJSONObject("sim1")
+        val sim2 = rings.optJSONObject("sim2")
+        // 用 ringFromJson 校验后再落盘（非法 JSON 会被回退为默认）
+        out[AnyCyCleConfig.KEY_RING_WIFI] =
+            AnyCyCleConfig.ringToJson(AnyCyCleConfig.ringFromJson(wifi?.toString(), AnyCyCleConfig.defaultWifi()))
+        out[AnyCyCleConfig.KEY_RING_SIM1] =
+            AnyCyCleConfig.ringToJson(AnyCyCleConfig.ringFromJson(sim1?.toString(), AnyCyCleConfig.defaultSim1()))
+        out[AnyCyCleConfig.KEY_RING_SIM2] =
+            AnyCyCleConfig.ringToJson(AnyCyCleConfig.ringFromJson(sim2?.toString(), AnyCyCleConfig.defaultSim2()))
+    }
+    return out
+}
+
+private fun resetDefaults(e: SharedPreferences.Editor) {
+    e.putBoolean(AnyCyCleConfig.KEY_ENABLED, AnyCyCleConfig.DEFAULT_ENABLED)
+    e.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, AnyCyCleConfig.DEFAULT_DISPLAY_MASK)
+    e.putBoolean(AnyCyCleConfig.KEY_HIDE_ICONS, AnyCyCleConfig.DEFAULT_HIDE_ICONS)
+    e.putFloat(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, AnyCyCleConfig.DEFAULT_CUTOUT_EXTRA_DP)
+    e.putFloat(AnyCyCleConfig.KEY_OFFSET_X_DP, AnyCyCleConfig.DEFAULT_OFFSET_X_DP)
+    e.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, AnyCyCleConfig.DEFAULT_OFFSET_Y_DP)
+    e.putFloat(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, AnyCyCleConfig.DEFAULT_DIVIDER_WIDTH_DP)
+    e.putInt(AnyCyCleConfig.KEY_DIVIDER_COLOR, AnyCyCleConfig.DEFAULT_DIVIDER_COLOR)
+    e.putString(AnyCyCleConfig.KEY_RING_ORDER, AnyCyCleConfig.DEFAULT_RING_ORDER)
+    e.putBoolean(AnyCyCleConfig.KEY_HIDE_LAUNCHER, false)
+    AnyCyCleConfig.writeRingJson(e, AnyCyCleConfig.KEY_RING_WIFI, AnyCyCleConfig.defaultWifi())
+    AnyCyCleConfig.writeRingJson(e, AnyCyCleConfig.KEY_RING_SIM1, AnyCyCleConfig.defaultSim1())
+    AnyCyCleConfig.writeRingJson(e, AnyCyCleConfig.KEY_RING_SIM2, AnyCyCleConfig.defaultSim2())
+}
+
+// ------------------------------------------------------------------
+// 应用功能工具
+// ------------------------------------------------------------------
+
+/** 重启 SystemUI（通过 root 执行 killall；结果以 Toast 提示） */
+private fun restartSystemUi(context: Context) {
+    Thread {
+        var msg: String
+        try {
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "killall com.android.systemui"))
+            val code = p.waitFor()
+            msg = if (code == 0) "已重启系统界面" else "重启失败（su 退出码 $code）"
+        } catch (t: Throwable) {
+            msg = "重启失败: ${t.message}"
+        }
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        }
+    }.start()
+}
+
+/** 桌面图标显隐：切换 launcher alias 组件启用状态（MainActivity 保留 LSPosed MODULE_SETTINGS 入口） */
+private fun applyHideLauncher(context: Context, hide: Boolean) {
+    try {
+        val pm = context.packageManager
+        val comp = ComponentName(context, "io.github.z2549.anycycle.LauncherAlias")
+        val newState =
+            if (hide) PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            else PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+        pm.setComponentEnabledSetting(
+            comp,
+            newState,
+            PackageManager.DONT_KILL_APP,
+        )
+    } catch (t: Throwable) {
+        t.printStackTrace()
+    }
+}
+
+/**
+ * v1.1 一次性迁移：挖孔中心垂直校正（+0.5dp）已内置到绘制层，
+ * 把历史版本手动补偿的垂直偏移清零，避免双重偏移。只执行一次。
+ */
+private fun migrateV11(p: SharedPreferences) {
+    try {
+        if (p.getBoolean(AnyCyCleConfig.KEY_MIGRATED_V11, false)) return
+        val editor = p.edit()
+        if (p.getFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, 0f) != 0f) {
+            editor.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, 0f)
+        }
+        editor.putBoolean(AnyCyCleConfig.KEY_MIGRATED_V11, true).apply()
+    } catch (t: Throwable) {
+        t.printStackTrace()
     }
 }
 
@@ -378,7 +767,7 @@ private fun SliderRow(
     enabled: Boolean = true,
     onCommit: (Float) -> Unit,
 ) {
-    val focusManager = LocalFocusManager.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     // 拖动期间使用本地值，松手才写入，避免频繁 IPC
     var local by remember(value) { mutableStateOf(value) }
     var text by remember(value) { mutableStateOf(formatNum(value, decimals)) }
@@ -438,98 +827,45 @@ private fun SliderRow(
 }
 
 @Composable
-private fun ColorRow(label: String, current: Int, enabled: Boolean = true, onPick: (Int) -> Unit) {
-    val focusManager = LocalFocusManager.current
-    var hex by remember(current) { mutableStateOf("#%06X".format(current and 0xFFFFFF)) }
-    var invalid by remember { mutableStateOf(false) }
-
-    fun commitHex() {
-        val cleaned = hex.trim().removePrefix("#").removePrefix("0x").removePrefix("0X")
-        if (!cleaned.matches(Regex("^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"))) {
-            invalid = true
-            return
-        }
-        val argb = cleaned.toLong(16)
-        // 6 位视为不透明；8 位为 AARRGGBB
-        val color = (if (cleaned.length == 6) argb or 0xFF000000L else argb).toInt()
-        onPick(color)
-        hex = "#%06X".format(color and 0xFFFFFF)
-        invalid = false
-        focusManager.clearFocus()
-    }
-
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .clip(CircleShape)
-                        .background(Color(current))
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(label, fontSize = 14.sp)
-            }
-            OutlinedTextField(
-                value = hex,
-                onValueChange = {
-                    hex = it
-                    invalid = false
-                },
-                modifier = Modifier.width(150.dp),
-                singleLine = true,
-                enabled = enabled,
-                textStyle = MaterialTheme.typography.bodySmall,
-                label = { Text("Hex", fontSize = 11.sp) },
-                isError = invalid,
-                supportingText = if (invalid) {
-                    { Text("格式：34C759 / #34C759 / FF34C759", fontSize = 10.sp) }
-                } else {
-                    null
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Ascii,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = { commitHex() }),
-            )
-        }
-        Row(
+private fun ColorPickRow(label: String, current: Int, enabled: Boolean = true, onPick: (Int) -> Unit) {
+    var showPicker by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            PALETTE.forEach { c ->
-                val selected = c == current
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(Color(c))
-                        .border(
-                            width = if (selected) 3.dp else 1.dp,
-                            color = if (selected) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.outlineVariant
-                            },
-                            shape = CircleShape,
-                        )
-                        .clickable(enabled = enabled) { onPick(c) },
-                )
-            }
-        }
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(Color(current))
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            label,
+            fontSize = 14.sp,
+            modifier = Modifier
+                .weight(1f)
+                .clickable(enabled = enabled) { showPicker = true },
+        )
+        Text(
+            "#%06X".format(current and 0xFFFFFF),
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (showPicker) {
+        ColorPickerDialog(
+            title = label,
+            initial = current,
+            onDismiss = { showPicker = false },
+            onPick = {
+                onPick(it)
+                showPicker = false
+            },
+        )
     }
 }
 
 /**
- * 嵌套顺序槽位选择器：点击弹出下拉菜单，选项为未被其他槽位占用的环。
+ * 嵌套顺序槽位选择器：点击弹出下拉菜单列出全部三环，选中即与当前槽位的环对调。
  */
 @Composable
 private fun OrderSlot(
@@ -546,8 +882,6 @@ private fun OrderSlot(
         AnyCyCleConfig.RING_SIM2_ID,
     )
     val current = order.getOrNull(slot) ?: all[slot]
-    // 选项 = 全部环 ID，排除其他槽位已占用的（自身除外）
-    val options = all.filter { opt -> opt == current || order.none { it == opt } }
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -563,7 +897,7 @@ private fun OrderSlot(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
             ) {
-                options.forEach { opt ->
+                all.forEach { opt ->
                     DropdownMenuItem(
                         text = { Text(ringLabel(opt)) },
                         onClick = {
@@ -615,8 +949,12 @@ private fun RingCard(
     controlsEnabled: Boolean,
     onUpdate: (AnyCyCleConfig.RingCfg) -> Unit,
 ) {
-    // 规则不足 5 条时用默认值补齐
-    val defaultRules = AnyCyCleConfig.defaultRules()
+    // 规则不足 5 条时用默认值补齐（按环各自的默认色补）
+    val defaultRules = when (title) {
+        "SIM 卡 1 环" -> defaultRulesSim1()
+        "SIM 卡 2 环" -> defaultRulesSim2()
+        else -> defaultRulesWifi()
+    }
     val rules = List(5) { i -> ring.rules.getOrNull(i) ?: defaultRules[i] }
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -643,7 +981,7 @@ private fun RingCard(
             ) { v ->
                 onUpdate(ring.copy(showTrack = v))
             }
-            ColorRow(
+            ColorPickRow(
                 label = "基础颜色",
                 current = ring.baseColor,
                 enabled = controlsEnabled,
@@ -666,7 +1004,6 @@ private fun RingCard(
                     onUpdate(ring.copy(rules = rules.toMutableList().also { it[i] = new }))
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
@@ -678,7 +1015,7 @@ private fun RuleRow(
     controlsEnabled: Boolean,
     onUpdate: (AnyCyCleConfig.ColorRule) -> Unit,
 ) {
-    val focusManager = LocalFocusManager.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     var levelText by remember(rule.maxLevel) { mutableStateOf(rule.maxLevel.toString()) }
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -716,7 +1053,7 @@ private fun RuleRow(
                 }),
             )
         }
-        ColorRow(
+        ColorPickRow(
             label = "颜色",
             current = rule.color,
             enabled = controlsEnabled,
@@ -724,6 +1061,157 @@ private fun RuleRow(
             onUpdate(rule.copy(color = c))
         }
     }
+}
+
+// ------------------------------------------------------------------
+// 选色弹窗：预设色板 + 饱和度/明度面板 + 色相条 + Hex
+// ------------------------------------------------------------------
+
+@Composable
+private fun ColorPickerDialog(
+    title: String,
+    initial: Int,
+    onDismiss: () -> Unit,
+    onPick: (Int) -> Unit,
+) {
+    var argb by remember { mutableStateOf(initial) }
+    val initHsv = FloatArray(3).also { android.graphics.Color.colorToHSV(initial, it) }
+    var hue by remember { mutableFloatStateOf(initHsv[0]) }
+    var svX by remember { mutableFloatStateOf(initHsv[1]) }
+    var svY by remember { mutableFloatStateOf(1f - initHsv[2]) }
+
+    fun updateSv(x: Float, y: Float, w: Float, h: Float) {
+        svX = (x / w).coerceIn(0f, 1f)
+        svY = (y / h).coerceIn(0f, 1f)
+        argb = Color.hsv(hue, svX, 1f - svY).toArgb()
+    }
+
+    var hexText by remember(argb) { mutableStateOf("#%06X".format(argb and 0xFFFFFF)) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, fontSize = 16.sp) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // 预览
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(Color(argb))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(hexText, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // 预设色板
+                PALETTE.chunked(6).forEach { rowColors ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        rowColors.forEach { c ->
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(c))
+                                    .border(
+                                        width = if (c == argb) 3.dp else 1.dp,
+                                        color = if (c == argb) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outlineVariant
+                                        },
+                                        shape = CircleShape,
+                                    )
+                                    .clickable { argb = c },
+                            )
+                        }
+                    }
+                }
+                // 饱和度/明度面板
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(150.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .pointerInput(hue) {
+                            detectTapGestures { off -> updateSv(off.x, off.y, size.width.toFloat(), size.height.toFloat()) }
+                        }
+                        .pointerInput(hue) {
+                            detectDragGestures { change, _ ->
+                                updateSv(change.position.x, change.position.y, size.width.toFloat(), size.height.toFloat())
+                            }
+                        },
+                ) {
+                    val w = size.width
+                    val h = size.height
+                    drawRect(Brush.horizontalGradient(listOf(Color.White, Color.hsv(hue, 1f, 1f))), size = size)
+                    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black)), size = size)
+                    drawCircle(
+                        Color.White,
+                        radius = 10f,
+                        center = Offset(svX * w, svY * h),
+                        style = Stroke(width = 4f),
+                    )
+                    drawCircle(
+                        Color.Black.copy(alpha = 0.6f),
+                        radius = 10f,
+                        center = Offset(svX * w, svY * h),
+                        style = Stroke(width = 2f),
+                    )
+                }
+                // 色相条
+                Text("色相", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(
+                    value = hue,
+                    onValueChange = {
+                        hue = it
+                        argb = Color.hsv(it, svX, 1f - svY).toArgb()
+                    },
+                    valueRange = 0f..360f,
+                )
+                // Hex 输入
+                val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+                OutlinedTextField(
+                    value = hexText,
+                    onValueChange = { input ->
+                        hexText = input
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    label = { Text("Hex（34C759 / FF34C759）") },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Ascii,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(onDone = {
+                        val cleaned = hexText.trim().removePrefix("#").removePrefix("0x").removePrefix("0X")
+                        if (cleaned.matches(Regex("^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"))) {
+                            val v = cleaned.toLong(16)
+                            val c = (if (cleaned.length == 6) v or 0xFF000000L else v).toInt()
+                            argb = c
+                            val hsv2 = FloatArray(3)
+                            android.graphics.Color.colorToHSV(c, hsv2)
+                            hue = hsv2[0]
+                            svX = hsv2[1]
+                            svY = 1f - hsv2[2]
+                        }
+                        focusManager.clearFocus()
+                    }),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onPick(argb) }) { Text("确定") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 // ------------------------------------------------------------------
@@ -736,23 +1224,6 @@ private fun formatNum(v: Float, decimals: Int): String =
     } else {
         String.format(Locale.US, "%.${decimals}f", v)
     }
-
-/**
- * v1.1 一次性迁移：挖孔中心垂直校正（+0.5dp）已内置到绘制层，
- * 把历史版本手动补偿的垂直偏移清零，避免双重偏移。只执行一次。
- */
-private fun migrateV11(p: SharedPreferences) {
-    try {
-        if (p.getBoolean(AnyCyCleConfig.KEY_MIGRATED_V11, false)) return
-        val editor = p.edit()
-        if (p.getFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, 0f) != 0f) {
-            editor.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, 0f)
-        }
-        editor.putBoolean(AnyCyCleConfig.KEY_MIGRATED_V11, true).apply()
-    } catch (t: Throwable) {
-        t.printStackTrace()
-    }
-}
 
 private val PALETTE = longArrayOf(
     0xFFFFFFFF, 0xFF000000, 0xFF9E9E9E,

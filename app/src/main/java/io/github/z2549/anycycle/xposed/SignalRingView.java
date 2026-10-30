@@ -103,6 +103,9 @@ public class SignalRingView extends View {
     private volatile float cutoutExtraDp = 0f;
     private volatile float offsetXDp = 0f;
     private volatile float offsetYDp = 0f;
+    /** 环间分割线：宽度 dp（0=关）与颜色 */
+    private volatile float dividerWidthDp = 0f;
+    private volatile int dividerColor = 0xFF000000;
     /** 嵌套顺序（内 → 外），元素为 RING_*，必须是三者的完整排列 */
     private volatile int[] ringOrder = new int[]{RING_WIFI, RING_SIM1, RING_SIM2};
     private volatile RingConf wifiConf = new RingConf(2.5f, 0xFFFFFFFF, true, new Rule[0]);
@@ -205,6 +208,8 @@ public class SignalRingView extends View {
             cutoutExtraDp = clamp((float) o.optDouble("cutoutExtra", 0.0), -6f, 6f);
             offsetXDp = (float) o.optDouble("ox", 0.0);
             offsetYDp = (float) o.optDouble("oy", 0.0);
+            dividerWidthDp = clamp((float) o.optDouble("divW", 0.0), 0f, 3f);
+            dividerColor = o.optInt("divColor", 0xFF000000);
             ringOrder = parseOrder(o.optJSONArray("order"));
             wifiConf = parseRing(o.optJSONObject("wifi"), 0xFFFFFFFF);
             sim1Conf = parseRing(o.optJSONObject("sim1"), 0xFF2196F3);
@@ -541,6 +546,8 @@ public class SignalRingView extends View {
 
         int m = mask;
         int[] order = ringOrder;
+        float divW = dividerWidthDp * density;
+        boolean drewAny = false;
         for (int i = 0; i < order.length; i++) {
             RingConf conf;
             int level;
@@ -560,10 +567,22 @@ public class SignalRingView extends View {
                     break;
             }
             if (conf == null || level < 0) continue;
+            // 环间分割线：在已画环与下一环之间画一圈纯色细环（占据 ringGap 位置）
+            if (drewAny && divW > 0.5f) {
+                paint.setStrokeWidth(divW);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeCap(Paint.Cap.BUTT);
+                paint.setColor(dividerColor);
+                float dr = cursor + divW / 2f;
+                ringRect.set(cx - dr, cy - dr, cx + dr, cy + dr);
+                canvas.drawArc(ringRect, 0f, 360f, false, paint);
+                cursor += divW;
+            }
             float stroke = Math.max(conf.strokeDp * density, 1f);
             float radius = cursor + stroke / 2f;
             drawOneRing(canvas, cx, cy, radius, stroke, conf, level);
             cursor = radius + stroke / 2f + dp(RING_GAP_DP);
+            drewAny = true;
         }
     }
 

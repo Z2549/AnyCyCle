@@ -30,6 +30,20 @@ object AnyCyCleConfig {
     /** v1.1 一次性迁移标记：挖孔中心垂直校正内置后，清零历史手动补偿的垂直偏移 */
     const val KEY_MIGRATED_V11 = "migrated_v11_center"
 
+    /** 环间分割线宽度（dp）：0 = 关闭；>0 时在相邻两环之间画一圈分割线 */
+    const val KEY_DIVIDER_WIDTH_DP = "divider_width_dp"
+    const val DEFAULT_DIVIDER_WIDTH_DP = 0f
+    const val DIVIDER_MIN_DP = 0f
+    const val DIVIDER_MAX_DP = 3f
+
+    /** 环间分割线颜色（默认黑色） */
+    const val KEY_DIVIDER_COLOR = "divider_color"
+    const val DEFAULT_DIVIDER_COLOR = 0xFF000000.toInt()
+
+    /** 隐藏桌面图标（禁用 launcher alias，从 LSPosed 管理器仍可打开设置页） */
+    const val KEY_HIDE_LAUNCHER = "hide_launcher"
+    const val DEFAULT_HIDE_LAUNCHER = false
+
     /** 显示内容位掩码：bit0=WIFI(1)、bit1=SIM1(2)、bit2=SIM2(4)，可叠加 */
     const val KEY_DISPLAY_MASK = "display_mask"
 
@@ -96,11 +110,15 @@ object AnyCyCleConfig {
         val strokeDp: Float = 2.5f,
         val baseColor: Int = 0xFFFFFFFF.toInt(),
         val showTrack: Boolean = true,
-        val rules: List<ColorRule> = defaultRules(),
+        val rules: List<ColorRule> = defaultRulesWifi(),
     )
 
-    /** 默认五档变色（红/橙/黄/浅绿/绿），阈值 = 档位号本身，用户可逐条改 */
-    fun defaultRules(): List<ColorRule> = listOf(
+    /**
+     * 默认五档变色：三环同色系但深浅分明（同档位色相一致、明度阶梯化），
+     * 多环紧贴时能看出环间差异又不突兀。
+     * WiFi = 标准色；SIM1 = 同色相加深；SIM2 = 同色相提亮。阈值 = 档位号本身，用户可逐条改。
+     */
+    fun defaultRulesWifi(): List<ColorRule> = listOf(
         ColorRule(true, 0, 0xFFD32F2F.toInt()),
         ColorRule(true, 1, 0xFFF57C00.toInt()),
         ColorRule(true, 2, 0xFFFBC02D.toInt()),
@@ -108,9 +126,28 @@ object AnyCyCleConfig {
         ColorRule(true, 4, 0xFF43A047.toInt()),
     )
 
-    fun defaultWifi(): RingCfg = RingCfg(baseColor = 0xFFFFFFFF.toInt())
-    fun defaultSim1(): RingCfg = RingCfg(baseColor = 0xFF2196F3.toInt())
-    fun defaultSim2(): RingCfg = RingCfg(baseColor = 0xFFAB47BC.toInt())
+    fun defaultRulesSim1(): List<ColorRule> = listOf(
+        ColorRule(true, 0, 0xFFAD2626.toInt()),
+        ColorRule(true, 1, 0xFFC96600.toInt()),
+        ColorRule(true, 2, 0xFFCE9D25.toInt()),
+        ColorRule(true, 3, 0xFF72A03D.toInt()),
+        ColorRule(true, 4, 0xFF37833A.toInt()),
+    )
+
+    fun defaultRulesSim2(): List<ColorRule> = listOf(
+        ColorRule(true, 0, 0xFFE16363.toInt()),
+        ColorRule(true, 1, 0xFFF89D40.toInt()),
+        ColorRule(true, 2, 0xFFFCD061.toInt()),
+        ColorRule(true, 3, 0xFFA8D278.toInt()),
+        ColorRule(true, 4, 0xFF74B475.toInt()),
+    )
+
+    /** 兼容旧调用（WiFi 标准色） */
+    fun defaultRules(): List<ColorRule> = defaultRulesWifi()
+
+    fun defaultWifi(): RingCfg = RingCfg(baseColor = 0xFFFFFFFF.toInt(), rules = defaultRulesWifi())
+    fun defaultSim1(): RingCfg = RingCfg(baseColor = 0xFF2196F3.toInt(), rules = defaultRulesSim1())
+    fun defaultSim2(): RingCfg = RingCfg(baseColor = 0xFFAB47BC.toInt(), rules = defaultRulesSim2())
 
     // ------------------------------------------------------------------
     // JSON 序列化（org.json，Android 平台自带，纯 Java 环境可用）
@@ -167,6 +204,11 @@ object AnyCyCleConfig {
         prefs.edit().putString(key, ringToJson(cfg)).apply()
     }
 
+    /** 在已有 Editor 上写入环配置（批量写场景：恢复默认 / 导入） */
+    fun writeRingJson(editor: SharedPreferences.Editor, key: String, cfg: RingCfg) {
+        editor.putString(key, ringToJson(cfg))
+    }
+
     // ------------------------------------------------------------------
     // Hook 端整体读取
     // ------------------------------------------------------------------
@@ -188,6 +230,9 @@ object AnyCyCleConfig {
         val hideIcons: Boolean = DEFAULT_HIDE_ICONS,
         val cutoutExtraDp: Float = DEFAULT_CUTOUT_EXTRA_DP,
         val ringOrder: List<String> = normalizeRingOrder(DEFAULT_RING_ORDER),
+        val dividerWidthDp: Float = DEFAULT_DIVIDER_WIDTH_DP,
+        val dividerColor: Int = DEFAULT_DIVIDER_COLOR,
+        val hideLauncher: Boolean = DEFAULT_HIDE_LAUNCHER,
         val offsetXDp: Float = DEFAULT_OFFSET_X_DP,
         val offsetYDp: Float = DEFAULT_OFFSET_Y_DP,
         val wifi: RingCfg = defaultWifi(),
@@ -203,6 +248,9 @@ object AnyCyCleConfig {
         hideIcons = prefs.getBoolean(KEY_HIDE_ICONS, DEFAULT_HIDE_ICONS),
         cutoutExtraDp = prefs.getFloat(KEY_CUTOUT_EXTRA_DP, DEFAULT_CUTOUT_EXTRA_DP),
         ringOrder = normalizeRingOrder(prefs.getString(KEY_RING_ORDER, null)),
+        dividerWidthDp = prefs.getFloat(KEY_DIVIDER_WIDTH_DP, DEFAULT_DIVIDER_WIDTH_DP),
+        dividerColor = prefs.getInt(KEY_DIVIDER_COLOR, DEFAULT_DIVIDER_COLOR),
+        hideLauncher = prefs.getBoolean(KEY_HIDE_LAUNCHER, DEFAULT_HIDE_LAUNCHER),
         offsetXDp = prefs.getFloat(KEY_OFFSET_X_DP, DEFAULT_OFFSET_X_DP),
         offsetYDp = prefs.getFloat(KEY_OFFSET_Y_DP, DEFAULT_OFFSET_Y_DP),
         wifi = ringFromJson(prefs.getString(KEY_RING_WIFI, null), defaultWifi()),

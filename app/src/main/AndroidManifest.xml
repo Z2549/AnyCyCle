@@ -7,16 +7,27 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.AnyCyCle">
 
+        <!-- MainActivity 仅保留 LSPosed MODULE_SETTINGS 入口；
+             桌面图标由 LauncherAlias 承载，可通过 setComponentEnabledSetting 隐藏 -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <!-- CATEGORY_INFO：LSPosed 管理器的“启动”按钮优先匹配该组件 -->
                 <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
+
+        <activity-alias
+            android:name=".LauncherAlias"
+            android:targetActivity=".MainActivity"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- libxposed 新格式：模块元数据全部在 META-INF/xposed/module.prop，
              不再使用 legacy manifest meta-data（LSPosed 2.x 按新格式发现模块） -->

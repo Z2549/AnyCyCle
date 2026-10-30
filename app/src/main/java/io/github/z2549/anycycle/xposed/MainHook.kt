@@ -304,6 +304,9 @@ class MainHook : XposedModule() {
         o.put("ox", cfg.offsetXDp.toDouble())
         o.put("oy", cfg.offsetYDp.toDouble())
         o.put("cutoutExtra", cfg.cutoutExtraDp.toDouble())
+        // 环间分割线：宽度 dp（0=关）与颜色
+        o.put("divW", cfg.dividerWidthDp.toDouble())
+        o.put("divColor", cfg.dividerColor)
         // 嵌套顺序（内 → 外），SignalRingView 按此从挖孔边缘向外堆叠
         o.put("order", JSONArray(cfg.ringOrder))
         o.put("wifi", JSONObject(AnyCyCleConfig.ringToJson(cfg.wifi)))
@@ -328,8 +331,28 @@ class MainHook : XposedModule() {
  */
 object IconHider {
 
+    // stacked_mobile：HyperOS 双卡叠加信号图标（小米 15 实测实际显示走这个 slot）
     private val WIFI_SLOTS = setOf("wifi", "demo_wifi")
-    private val MOBILE_SLOTS = setOf("mobile", "demo_mobile", "no_sim")
+    private val MOBILE_SLOTS = setOf("mobile", "demo_mobile", "no_sim", "stacked_mobile")
+
+    /** 诊断：记录系统实际使用过的图标 slot 名（限 60 条，用于定位 HyperOS 移动信号 slot） */
+    private val seenSlots = LinkedHashSet<String>()
+    private var slotLogCount = 0
+
+    private fun logSlot(slot: String, logFn: (Int, String, Throwable?) -> Unit) {
+        try {
+            if (slotLogCount >= 60) return
+            if (seenSlots.add(slot)) {
+                slotLogCount++
+                logFn(
+                    Log.WARN,
+                    "slot seen: \"$slot\" hideWifi=$hideWifi hideMobile=$hideMobile",
+                    null,
+                )
+            }
+        } catch (_: Throwable) {
+        }
+    }
 
     private const val TAG = "AnyCyCle"
     private const val STATUS_BAR_ICON = "com.android.internal.statusbar.StatusBarIcon"
@@ -410,7 +433,7 @@ object IconHider {
             val statusBarList = getStaticMutableList(cls, "RIGHT_BLOCK_LIST") ?: return
             val controlList = getStaticMutableList(cls, "CONTROL_CENTER_BLOCK_LIST") ?: return
             val wifiSlots = listOf("wifi", "demo_wifi")
-            val mobileSlots = listOf("mobile", "demo_mobile", "no_sim")
+            val mobileSlots = listOf("mobile", "demo_mobile", "no_sim", "stacked_mobile")
 
             val add = ArrayList<String>()
             val remove = ArrayList<String>()
@@ -488,6 +511,7 @@ object IconHider {
                     // 直接反射把 icon.visible 置 false（引用对象，proceed 前改字段即可生效）
                     hookBefore(module, method, logFn) { chain ->
                         val slot = chain.getArg(0) as? String ?: return@hookBefore null
+                        logSlot(slot, logFn)
                         if (shouldHide(slot)) {
                             chain.getArg(1)?.let { icon -> setFieldBoolean(icon, "visible", false) }
                         }
@@ -500,6 +524,7 @@ object IconHider {
                 method.name == "setIcon" && paramsMatch(method, String::class.java, holderCls) -> {
                     hookBefore(module, method, logFn) { chain ->
                         val slot = chain.getArg(0) as? String ?: return@hookBefore null
+                        logSlot(slot, logFn)
                         if (shouldHide(slot)) {
                             chain.getArg(1)?.let { holder ->
                                 val icon = getField(holder, "mIcon")
