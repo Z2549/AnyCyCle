@@ -80,6 +80,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import io.github.z2549.anycycle.ui.theme.AnyCyCleTheme
@@ -131,9 +133,9 @@ fun RootScreen() {
                     cfg = AnyCyCleConfig.read(p)
                     // 桌面图标隐藏状态与配置同步（App 重装/数据清理后自动纠正）
                     applyHideLauncher(context, cfg.hideLauncher)
-                    p.registerOnSharedPreferenceChangeListener { sp, _ ->
-                        cfg = AnyCyCleConfig.read(sp)
-                    }
+                    // 不再注册 RemotePreferences 变更回调回读：配置只有本 App 一个写入方，
+                    // 该回调偶发带回旧值把 UI 弹回（"开关状态与交互不一致"的根源）。
+                    // UI 一致性由 commitWith 乐观更新 + ON_RESUME 重读保证。
                 } catch (t: Throwable) {
                     t.printStackTrace()
                 }
@@ -148,11 +150,43 @@ fun RootScreen() {
         onDispose { }
     }
 
+    // 回到前台时重读一次 RemotePreferences 兜底（迁移/导入等批量写入后同步 UI）
+    val activity = context as? ComponentActivity
+    DisposableEffect(activity) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val p = prefs
+                if (p != null) {
+                    cfg = try {
+                        AnyCyCleConfig.read(p)
+                    } catch (_: Throwable) {
+                        cfg
+                    }
+                }
+            }
+        }
+        activity?.lifecycle?.addObserver(obs)
+        onDispose { activity?.lifecycle?.removeObserver(obs) }
+    }
+
     fun commit(block: (SharedPreferences.Editor) -> Unit) {
         prefs?.edit()?.let { editor ->
             block(editor)
             editor.apply()
         }
+    }
+
+    /**
+     * 乐观提交：先把变更应用到本地 cfg（UI 立即一致），再写入 RemotePreferences。
+     * 修复"开关有时候失效 / 与交互后状态不一致"——此前 HomePage 只写 prefs，
+     * UI 依赖 RemotePreferences 的变更回调回读，该回调在部分场景不可靠。
+     */
+    fun commitWith(
+        update: (AnyCyCleConfig.Cfg) -> AnyCyCleConfig.Cfg,
+        block: (SharedPreferences.Editor) -> Unit,
+    ) {
+        cfg = update(cfg)
+        commit(block)
     }
 
     fun updateRing(ringKey: String, newRing: AnyCyCleConfig.RingCfg) {
@@ -214,7 +248,7 @@ fun RootScreen() {
                 PAGE_HOME -> HomePage(
                     cfg = cfg,
                     serviceBound = serviceBound,
-                    commit = { b -> commit(b) },
+                    commitWith = { u, b -> commitWith(u, b) },
                     setOrderSlot = { s, id -> setOrderSlot(s, id) },
                 )
                 PAGE_WIFI -> RingPage("WiFi 环", cfg.wifi, serviceBound) {
@@ -267,7 +301,7 @@ fun RootScreen() {
 private fun HomePage(
     cfg: AnyCyCleConfig.Cfg,
     serviceBound: Boolean,
-    commit: ((SharedPreferences.Editor) -> Unit) -> Unit,
+    commitWith: ((AnyCyCleConfig.Cfg) -> AnyCyCleConfig.Cfg, (SharedPreferences.Editor) -> Unit) -> Unit,
     setOrderSlot: (Int, String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -301,7 +335,9 @@ private fun HomePage(
                     inStream.bufferedReader().readText()
                 } ?: throw IllegalStateException("无法读取文件")
                 val keys = importJson(text)
-                commit { e ->
+                // 乐观更新：先把导入的键值折叠进本地 cfg，再整体落盘
+                val patched = keys.entries.fold(cfg) { acc, (k, v) -> applyCfgKey(acc, k, v) }
+                commitWith({ _ -> patched }) { e ->
                     keys.forEach { (k, v) ->
                         when (v) {
                             is Boolean -> e.putBoolean(k, v)
@@ -350,7 +386,9 @@ private fun HomePage(
                     checked = cfg.enabled,
                     enabled = serviceBound,
                 ) { v ->
-                    commit { it.putBoolean(AnyCyCleConfig.KEY_ENABLED, v) }
+                    commitWith({ c -> c.copy(enabled = v) }) {
+                        it.putBoolean(AnyCyCleConfig.KEY_ENABLED, v)
+                    }
                 }
             }
         }
@@ -365,17 +403,23 @@ private fun HomePage(
                 SwitchMaskRow(cfg, AnyCyCleConfig.BIT_WIFI, "WiFi（默认）", serviceBound) { v ->
                     val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_WIFI
                     else cfg.displayMask and AnyCyCleConfig.BIT_WIFI.inv()
-                    commit { it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask) }
+                    commitWith({ c -> c.copy(displayMask = newMask) }) {
+                        it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask)
+                    }
                 }
                 SwitchMaskRow(cfg, AnyCyCleConfig.BIT_SIM1, "SIM 卡 1", serviceBound) { v ->
                     val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_SIM1
                     else cfg.displayMask and AnyCyCleConfig.BIT_SIM1.inv()
-                    commit { it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask) }
+                    commitWith({ c -> c.copy(displayMask = newMask) }) {
+                        it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask)
+                    }
                 }
                 SwitchMaskRow(cfg, AnyCyCleConfig.BIT_SIM2, "SIM 卡 2", serviceBound) { v ->
                     val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_SIM2
                     else cfg.displayMask and AnyCyCleConfig.BIT_SIM2.inv()
-                    commit { it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask) }
+                    commitWith({ c -> c.copy(displayMask = newMask) }) {
+                        it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask)
+                    }
                 }
                 Text(
                     "各环紧贴摄像头挖孔、由内向外嵌套；默认仅 WiFi（最内环）",
@@ -401,7 +445,9 @@ private fun HomePage(
                     checked = cfg.hideIcons,
                     enabled = serviceBound,
                 ) { v ->
-                    commit { it.putBoolean(AnyCyCleConfig.KEY_HIDE_ICONS, v) }
+                    commitWith({ c -> c.copy(hideIcons = v) }) {
+                        it.putBoolean(AnyCyCleConfig.KEY_HIDE_ICONS, v)
+                    }
                 }
             }
         }
@@ -421,7 +467,9 @@ private fun HomePage(
                     unit = "dp",
                     enabled = serviceBound,
                 ) { v ->
-                    commit { it.putFloat(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, v) }
+                    commitWith({ c -> c.copy(cutoutExtraDp = v) }) {
+                        it.putFloat(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, v)
+                    }
                 }
                 Text(
                     "环大小由挖孔与各环粗细决定，此处微调估算的挖孔半径（正值 = 整体外扩）",
@@ -436,7 +484,9 @@ private fun HomePage(
                     unit = "dp",
                     enabled = serviceBound,
                 ) { v ->
-                    commit { it.putFloat(AnyCyCleConfig.KEY_OFFSET_X_DP, v) }
+                    commitWith({ c -> c.copy(offsetXDp = v) }) {
+                        it.putFloat(AnyCyCleConfig.KEY_OFFSET_X_DP, v)
+                    }
                 }
                 SliderRow(
                     label = "垂直偏移（下为正）",
@@ -446,7 +496,9 @@ private fun HomePage(
                     unit = "dp",
                     enabled = serviceBound,
                 ) { v ->
-                    commit { it.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, v) }
+                    commitWith({ c -> c.copy(offsetYDp = v) }) {
+                        it.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, v)
+                    }
                 }
             }
         }
@@ -464,11 +516,9 @@ private fun HomePage(
                     checked = cfg.dividerWidthDp > 0f,
                     enabled = serviceBound,
                 ) { v ->
-                    commit {
-                        it.putFloat(
-                            AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP,
-                            if (v) 1.5f else 0f,
-                        )
+                    val newWidth = if (v) 1.5f else 0f
+                    commitWith({ c -> c.copy(dividerWidthDp = newWidth) }) {
+                        it.putFloat(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, newWidth)
                     }
                 }
                 if (cfg.dividerWidthDp > 0f) {
@@ -480,14 +530,18 @@ private fun HomePage(
                         unit = "dp",
                         enabled = serviceBound,
                     ) { v ->
-                        commit { it.putFloat(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, v) }
+                        commitWith({ c -> c.copy(dividerWidthDp = v) }) {
+                            it.putFloat(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, v)
+                        }
                     }
                     ColorPickRow(
                         label = "分割线颜色",
                         current = cfg.dividerColor,
                         enabled = serviceBound,
                     ) { c ->
-                        commit { it.putInt(AnyCyCleConfig.KEY_DIVIDER_COLOR, c) }
+                        commitWith({ old -> old.copy(dividerColor = c) }) {
+                            it.putInt(AnyCyCleConfig.KEY_DIVIDER_COLOR, c)
+                        }
                     }
                 }
             }
@@ -506,7 +560,9 @@ private fun HomePage(
                     checked = cfg.hideLauncher,
                     enabled = serviceBound,
                 ) { v ->
-                    commit { it.putBoolean(AnyCyCleConfig.KEY_HIDE_LAUNCHER, v) }
+                    commitWith({ c -> c.copy(hideLauncher = v) }) {
+                        it.putBoolean(AnyCyCleConfig.KEY_HIDE_LAUNCHER, v)
+                    }
                     applyHideLauncher(context, v)
                     toast(
                         if (v) "桌面图标已隐藏，可从 LSPosed 管理器重新打开"
@@ -529,7 +585,8 @@ private fun HomePage(
                 }
                 OutlinedButton(
                     onClick = {
-                        commit { e -> resetDefaults(e) }
+                        // 乐观更新：本地 cfg 直接置为默认值，UI 立即一致
+                        commitWith({ _ -> AnyCyCleConfig.defaults() }) { e -> resetDefaults(e) }
                         applyHideLauncher(context, false)
                         toast("已恢复默认配置")
                     },
@@ -615,6 +672,32 @@ private fun buildExportJson(cfg: AnyCyCleConfig.Cfg): String {
         .put("rings", rings)
         .toString(2)
 }
+
+/**
+ * 单个配置键值变更映射到本地 Cfg（乐观更新 / 导入折叠用）。
+ * 未知键忽略；环 JSON 经 ringFromJson 校验，非法时回退当前值。
+ */
+private fun applyCfgKey(c: AnyCyCleConfig.Cfg, key: String, value: Any?): AnyCyCleConfig.Cfg =
+    when (key) {
+        AnyCyCleConfig.KEY_ENABLED -> c.copy(enabled = value as Boolean)
+        AnyCyCleConfig.KEY_DISPLAY_MASK -> c.copy(displayMask = value as Int)
+        AnyCyCleConfig.KEY_HIDE_ICONS -> c.copy(hideIcons = value as Boolean)
+        AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP -> c.copy(cutoutExtraDp = value as Float)
+        AnyCyCleConfig.KEY_OFFSET_X_DP -> c.copy(offsetXDp = value as Float)
+        AnyCyCleConfig.KEY_OFFSET_Y_DP -> c.copy(offsetYDp = value as Float)
+        AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP -> c.copy(dividerWidthDp = value as Float)
+        AnyCyCleConfig.KEY_DIVIDER_COLOR -> c.copy(dividerColor = value as Int)
+        AnyCyCleConfig.KEY_HIDE_LAUNCHER -> c.copy(hideLauncher = value as Boolean)
+        AnyCyCleConfig.KEY_RING_ORDER ->
+            c.copy(ringOrder = AnyCyCleConfig.normalizeRingOrder(value as? String))
+        AnyCyCleConfig.KEY_RING_WIFI ->
+            c.copy(wifi = AnyCyCleConfig.ringFromJson(value as? String, c.wifi))
+        AnyCyCleConfig.KEY_RING_SIM1 ->
+            c.copy(sim1 = AnyCyCleConfig.ringFromJson(value as? String, c.sim1))
+        AnyCyCleConfig.KEY_RING_SIM2 ->
+            c.copy(sim2 = AnyCyCleConfig.ringFromJson(value as? String, c.sim2))
+        else -> c
+    }
 
 /** 解析备份 JSON，返回 键 -> 值 的扁平映射（含三环 JSON 字符串）；格式非法抛异常 */
 private fun importJson(text: String): Map<String, Any> {

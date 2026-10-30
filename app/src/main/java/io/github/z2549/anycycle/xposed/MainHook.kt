@@ -493,6 +493,61 @@ object IconHider {
         }
         hookedOnce = hooked
         logFn(Log.WARN, "icon hider hooked=$hooked classes=${classes.map { it.name }}", null)
+
+        // 网络类型标识（"5G" 小字）隐藏：信号图标藏掉后它独立绘制、会遗留
+        hookMobileTypeHide(module, hostClassLoader, logFn)
+    }
+
+    /**
+     * 隐藏移动网络类型标识（"5G" 小字。实现参考 HyperCeiler MobileTypeSingle2Hook，AGPL-3.0）。
+     *
+     * HyperOS 的网络类型文字由 MobileTypeDrawable 绘制，不属于信号图标本体——
+     * BLOCK_LIST / setIcon hook 把信号柱藏掉后它仍会遗留（张总实测环内右下侧 5G 残留）：
+     *  - Android 36+（HyperOS 3）: com.miui.systemui.statusbar.views.MobileTypeDrawable
+     *  - 其余: com.android.systemui.statusbar.views.MobileTypeDrawable
+     *
+     * hook 其 measure()：hideMobile=true 时直接返回 null（不测量 → 宽度为 0，不显示）；
+     * false 时放行原逻辑。受 updateRules 的 hideMobile 动态门控，开关即时生效、无需重启。
+     */
+    private fun hookMobileTypeHide(
+        module: XposedInterface,
+        hostClassLoader: ClassLoader,
+        logFn: (Int, String, Throwable?) -> Unit,
+    ) {
+        val candidates = listOf(
+            "com.miui.systemui.statusbar.views.MobileTypeDrawable",
+            "com.android.systemui.statusbar.views.MobileTypeDrawable",
+        )
+        for (name in candidates) {
+            val cls = try {
+                hostClassLoader.loadClass(name)
+            } catch (_: Throwable) {
+                null
+            } ?: continue
+            var hooked = false
+            for (method in cls.declaredMethods) {
+                if (method.name != "measure") continue
+                try {
+                    module.hook(method)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                        .intercept(object : XposedInterface.Hooker {
+                            override fun intercept(chain: XposedInterface.Chain): Any? {
+                                return if (hideMobile) null else chain.proceed()
+                            }
+                        })
+                    hooked = true
+                } catch (t: Throwable) {
+                    logFn(Log.WARN, "hook ${cls.simpleName}.measure failed", t)
+                }
+            }
+            logFn(
+                Log.WARN,
+                "mobile type drawable ${cls.name} hooked=$hooked (gated by hideMobile)",
+                null,
+            )
+            return
+        }
+        logFn(Log.WARN, "MobileTypeDrawable not found; small 5G hide unavailable", null)
     }
 
     private fun hookControllerClass(
