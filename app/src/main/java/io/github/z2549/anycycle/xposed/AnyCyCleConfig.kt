@@ -47,10 +47,10 @@ object AnyCyCleConfig {
     /** 启用显示时隐藏状态栏对应原版图标（HyperCeiler 方式） */
     const val DEFAULT_HIDE_ICONS = true
 
-    /** 外环外径（dp） */
-    const val DEFAULT_SIZE_DP = 42f
-    const val SIZE_MIN_DP = 20f
-    const val SIZE_MAX_DP = 80f
+    /** 外环外径（dp，圆心为摄像头挖孔中心，参考 CycleBattery 默认 60） */
+    const val DEFAULT_SIZE_DP = 60f
+    const val SIZE_MIN_DP = 24f
+    const val SIZE_MAX_DP = 120f
 
     /** 相对默认锚点（状态栏右侧）的偏移（dp） */
     const val DEFAULT_OFFSET_X_DP = 0f

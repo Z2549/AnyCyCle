@@ -5,6 +5,7 @@ import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -17,6 +18,7 @@ import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
+import android.view.DisplayCutout;
 import android.view.View;
 
 import org.json.JSONArray;
@@ -478,8 +480,11 @@ public class SignalRingView extends View {
             loc[0] = 0;
             loc[1] = 0;
         }
-        float cx = getWidth() - dp(31f) + ox - loc[0];
-        float cy = statusBarHeightPx() / 2f + oy - loc[1];
+        // 圆心 = 前置摄像头挖孔中心（屏幕坐标，lsp_CycleBattery 同款定位），
+        // 找不到挖孔时回退屏幕顶部中央
+        float[] c = cutoutCenter();
+        float cx = c[0] + ox - loc[0];
+        float cy = c[1] + oy - loc[1];
         float outerR = Math.max(sizeDp * density / 2f, 1f);
 
         int m = mask;
@@ -556,6 +561,40 @@ public class SignalRingView extends View {
     // ------------------------------------------------------------------
     // 定位辅助
     // ------------------------------------------------------------------
+
+    /**
+     * 前置摄像头挖孔中心（屏幕坐标系，借鉴 lsp_CycleBattery 的 CameraRingView 定位）。
+     * 取四边中第一个非空的切孔矩形；找不到挖孔时回退屏幕顶部中央。
+     */
+    private float[] cutoutCenter() {
+        float[] out = new float[2];
+        try {
+            DisplayCutout cutout = getDisplay() == null ? null : getDisplay().getCutout();
+            Rect r = cutoutRect(cutout);
+            if (r != null && !r.isEmpty()) {
+                out[0] = r.exactCenterX();
+                out[1] = r.exactCenterY();
+                return out;
+            }
+        } catch (Throwable ignored) {
+        }
+        out[0] = getWidth() / 2f;
+        out[1] = statusBarHeightPx() / 2f;
+        return out;
+    }
+
+    private Rect cutoutRect(DisplayCutout cutout) {
+        if (cutout == null) return null;
+        Rect r = cutout.getBoundingRectTop();
+        if (r != null && !r.isEmpty()) return r;
+        r = cutout.getBoundingRectLeft();
+        if (r != null && !r.isEmpty()) return r;
+        r = cutout.getBoundingRectRight();
+        if (r != null && !r.isEmpty()) return r;
+        r = cutout.getBoundingRectBottom();
+        if (r != null && !r.isEmpty()) return r;
+        return null;
+    }
 
     private int statusBarHeightPx() {
         try {
