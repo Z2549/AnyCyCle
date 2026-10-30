@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- nested signal rings: outer ring / inner ring / center dot, centered at (54,54) -->
+    <!-- outer ring, r=27 -->
+    <path
+        android:pathData="M27,54a27,27 0 1,0 54,0a27,27 0 1,0 -54,0"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:fillColor="#00000000" />
+    <!-- inner ring, r=15 -->
+    <path
+        android:pathData="M39,54a15,15 0 1,0 30,0a15,15 0 1,0 -30,0"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:fillColor="#00000000" />
+    <!-- center dot, r=5 -->
+    <path
+        android:pathData="M49,54a5,5 0 1,0 10,0a5,5 0 1,0 -10,0"
+        android:fillColor="#FFFFFF" />
+</vector>

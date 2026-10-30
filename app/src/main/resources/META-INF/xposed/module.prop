@@ -1,0 +1,9 @@
+id=anycycle
+name=AnyCyCle
+version=1.0
+versionCode=1
+author=Z2549
+description=Status bar ring signal indicator: SIM1/SIM2/WiFi nested rings with per-ring color, stroke width and level thresholds; hides original status bar icons (HyperCeiler-style).
+minApiVersion=102
+targetApiVersion=102
+staticScope=true

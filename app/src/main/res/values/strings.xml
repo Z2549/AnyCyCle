@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AnyCyCle</string>
+    <string name="module_description">状态栏环形信号指示器：SIM1 / SIM2 / WiFi 嵌套多环显示，支持逐环颜色、粗细与档位变色，并可按 HyperCeiler 方式隐藏状态栏原版图标。</string>
+</resources>

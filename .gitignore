@@ -1,0 +1,19 @@
+# 签名密钥（绝不入库：公开仓库只走 CI Secrets）
+/keystore/
+keystore.properties
+
+# 构建产物
+build/
+.gradle/
+local.properties
+/captures
+.cxx
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 杂项
+*.log
+.DS_Store

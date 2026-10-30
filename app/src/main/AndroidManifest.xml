@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.AnyCyCle">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <!-- CATEGORY_INFO：LSPosed 管理器的“启动”按钮优先匹配该组件 -->
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
+
+        <!-- libxposed 新格式：模块元数据全部在 META-INF/xposed/module.prop，
+             不再使用 legacy manifest meta-data（LSPosed 2.x 按新格式发现模块） -->
+        <meta-data
+            android:name="io.github.libxposed.framework"
+            android:value="true" />
+    </application>
+
+</manifest>
