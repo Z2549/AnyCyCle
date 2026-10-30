@@ -47,7 +47,7 @@ jobs:
           EOF
 
       - name: Build debug and release APKs
-        run: ./gradlew assembleDebug assembleRelease --no-daemon
+        run: chmod +x gradlew && ./gradlew assembleDebug assembleRelease --no-daemon
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

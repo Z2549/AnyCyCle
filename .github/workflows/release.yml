@@ -45,7 +45,7 @@ jobs:
           EOF
 
       - name: Build release APK
-        run: ./gradlew assembleRelease --no-daemon
+        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
