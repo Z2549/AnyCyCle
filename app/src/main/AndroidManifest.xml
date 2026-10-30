@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- SignalRingView 运行在 SystemUI 进程内（宿主已持有该权限）；
+         声明它仅为通过 lint MissingPermission 检查（普通权限，安装期授予，无副作用） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

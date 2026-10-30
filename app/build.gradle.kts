@@ -95,6 +95,10 @@ android {
     buildFeatures {
         compose = true
     }
+    lint {
+        // local.properties（本机 SDK 路径，gitignore 不入库）触发 PropertyEscape，与项目代码无关
+        disable += "PropertyEscape"
+    }
 }
 
 dependencies {

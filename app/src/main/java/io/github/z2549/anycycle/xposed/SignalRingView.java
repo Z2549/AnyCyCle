@@ -1,5 +1,6 @@
 package io.github.z2549.anycycle.xposed;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
@@ -376,6 +377,9 @@ public class SignalRingView extends View {
     }
 
     /** 按当前活卡列表重新绑定 SIM1/SIM2 的信号监听（卡列表变化时重复调用） */
+    @SuppressLint("MissingPermission")
+    // 本视图运行在 SystemUI 进程内（宿主已持有 READ_PHONE_STATE）；
+    // 且 getActiveSubscriptionInfoList 已捕获 SecurityException 优雅降级。
     private void rebindSims() {
         unregisterSims();
 
