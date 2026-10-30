@@ -24,6 +24,7 @@
 
 - 按 HyperCeiler 的实现方式，hook `StatusBarIconControllerImpl#setIcon` 将对应 slot 图标置为不可见，并同步 HyperOS 的 `MiuiIconManagerUtils` BLOCK_LIST；
 - 覆盖 slot：`wifi` / `demo_wifi` / `mobile` / `demo_mobile` / `no_sim` / **`stacked_mobile`**（HyperOS 双卡叠加信号图标）；
+- 隐藏 SIM 环时连带隐藏移动网络类型标识（"5G" 小字，hook `MobileTypeDrawable#measure`，参考 HyperCeiler MobileTypeSingle2Hook）；
 - 显示环与图标隐藏联动：选哪环藏哪图标。
 
 ### 模块应用
@@ -31,6 +32,7 @@
 - **四页设置**：主页（总开关 / 显示内容 / 嵌套顺序 / 外观偏移 / 分割线 / 应用功能）+ WiFi / SIM1 / SIM2 三个环详情页；
 - **重启系统界面按钮**：顶栏右上角一键 `killall com.android.systemui`（需 root 授权）；
 - **配置实时同步**：通过 libxposed 102 RemotePreferences 推送至 SystemUI 进程，即改即生效；
+- **开关状态一致**：应用内所有开关乐观更新本地状态，不依赖跨进程回调回读，杜绝偶发的"开关弹回旧值"；
 - **配置备份**：导出 / 导入 JSON 配置文件（SAF），一键恢复默认；
 - **隐藏桌面图标**：隐藏后可从 LSPosed 管理器重新打开设置页。
 
