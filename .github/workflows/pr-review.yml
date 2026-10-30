@@ -77,9 +77,12 @@ jobs:
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # diff_context：只对本次 PR 改动涉及的行发行内评论（github-pr-review
+          # 只支持 diff 内行内评论；nofilter 会把全仓库问题回退成 Actions 注解
+          # 并触发 10+10 上限报错）。全量 lint 统计由下方报告评论承担。
           reviewdog -f=checkstyle \
             -reporter=github-pr-review \
-            -filter-mode=nofilter \
+            -filter-mode=diff_context \
             -fail-level=none \
             -name=AndroidLint \
             < lint-checkstyle.xml
