@@ -18,9 +18,17 @@ object AnyCyCleConfig {
 
     const val KEY_ENABLED = "enabled"
     const val KEY_HIDE_ICONS = "hide_icons"
-    const val KEY_SIZE_DP = "size_dp"
     const val KEY_OFFSET_X_DP = "offset_x_dp"
     const val KEY_OFFSET_Y_DP = "offset_y_dp"
+
+    /** 挖孔半径微调（dp）：估算的挖孔半径偏大/偏小时校正，正值 = 向外扩 */
+    const val KEY_CUTOUT_EXTRA_DP = "cutout_extra_dp"
+
+    /** 环嵌套顺序（内 → 外），逗号分隔的环 ID：wifi / sim1 / sim2 */
+    const val KEY_RING_ORDER = "ring_order"
+
+    /** v1.1 一次性迁移标记：挖孔中心垂直校正内置后，清零历史手动补偿的垂直偏移 */
+    const val KEY_MIGRATED_V11 = "migrated_v11_center"
 
     /** 显示内容位掩码：bit0=WIFI(1)、bit1=SIM1(2)、bit2=SIM2(4)，可叠加 */
     const val KEY_DISPLAY_MASK = "display_mask"
@@ -47,10 +55,18 @@ object AnyCyCleConfig {
     /** 启用显示时隐藏状态栏对应原版图标（HyperCeiler 方式） */
     const val DEFAULT_HIDE_ICONS = true
 
-    /** 外环外径（dp，圆心为摄像头挖孔中心，参考 CycleBattery 默认 60） */
-    const val DEFAULT_SIZE_DP = 60f
-    const val SIZE_MIN_DP = 24f
-    const val SIZE_MAX_DP = 120f
+    /** 环 ID（嵌套顺序配置使用） */
+    const val RING_WIFI_ID = "wifi"
+    const val RING_SIM1_ID = "sim1"
+    const val RING_SIM2_ID = "sim2"
+
+    /** 默认嵌套顺序（内 → 外）：最内环 WiFi（用户要求），SIM1、SIM2 依次向外 */
+    const val DEFAULT_RING_ORDER = "wifi,sim1,sim2"
+
+    /** 挖孔半径微调默认值与范围（dp） */
+    const val DEFAULT_CUTOUT_EXTRA_DP = 0f
+    const val CUTOUT_EXTRA_MIN_DP = -6f
+    const val CUTOUT_EXTRA_MAX_DP = 6f
 
     /** 相对默认锚点（状态栏右侧）的偏移（dp） */
     const val DEFAULT_OFFSET_X_DP = 0f
@@ -155,11 +171,23 @@ object AnyCyCleConfig {
     // Hook 端整体读取
     // ------------------------------------------------------------------
 
+    /**
+     * 解析并纠正嵌套顺序：只保留合法环 ID 并去重，缺失的按默认顺序补到末尾，
+     * 保证结果恒为三个环 ID 的排列（内 → 外）。
+     */
+    fun normalizeRingOrder(raw: String?): List<String> {
+        val all = listOf(RING_WIFI_ID, RING_SIM1_ID, RING_SIM2_ID)
+        val picked = raw?.split(',')?.map { it.trim() }?.filter { it in all }?.distinct()
+            ?: emptyList()
+        return picked + all.filter { it !in picked }
+    }
+
     data class Cfg(
         val enabled: Boolean = DEFAULT_ENABLED,
         val displayMask: Int = DEFAULT_DISPLAY_MASK,
         val hideIcons: Boolean = DEFAULT_HIDE_ICONS,
-        val sizeDp: Float = DEFAULT_SIZE_DP,
+        val cutoutExtraDp: Float = DEFAULT_CUTOUT_EXTRA_DP,
+        val ringOrder: List<String> = normalizeRingOrder(DEFAULT_RING_ORDER),
         val offsetXDp: Float = DEFAULT_OFFSET_X_DP,
         val offsetYDp: Float = DEFAULT_OFFSET_Y_DP,
         val wifi: RingCfg = defaultWifi(),
@@ -173,7 +201,8 @@ object AnyCyCleConfig {
         enabled = prefs.getBoolean(KEY_ENABLED, DEFAULT_ENABLED),
         displayMask = prefs.getInt(KEY_DISPLAY_MASK, DEFAULT_DISPLAY_MASK),
         hideIcons = prefs.getBoolean(KEY_HIDE_ICONS, DEFAULT_HIDE_ICONS),
-        sizeDp = prefs.getFloat(KEY_SIZE_DP, DEFAULT_SIZE_DP),
+        cutoutExtraDp = prefs.getFloat(KEY_CUTOUT_EXTRA_DP, DEFAULT_CUTOUT_EXTRA_DP),
+        ringOrder = normalizeRingOrder(prefs.getString(KEY_RING_ORDER, null)),
         offsetXDp = prefs.getFloat(KEY_OFFSET_X_DP, DEFAULT_OFFSET_X_DP),
         offsetYDp = prefs.getFloat(KEY_OFFSET_Y_DP, DEFAULT_OFFSET_Y_DP),
         wifi = ringFromJson(prefs.getString(KEY_RING_WIFI, null), defaultWifi()),

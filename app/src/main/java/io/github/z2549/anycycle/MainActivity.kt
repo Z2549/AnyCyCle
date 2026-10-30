@@ -12,6 +12,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,7 +31,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -83,6 +87,7 @@ fun SettingsScreen() {
                 try {
                     val p = service.getRemotePreferences(AnyCyCleConfig.PREF_GROUP)
                     prefs = p
+                    migrateV11(p)
                     cfg = AnyCyCleConfig.read(p)
                     p.registerOnSharedPreferenceChangeListener { sp, _ ->
                         cfg = AnyCyCleConfig.read(sp)
@@ -118,6 +123,15 @@ fun SettingsScreen() {
         }
         val p = prefs
         if (p != null) AnyCyCleConfig.writeRing(p, ringKey, sorted)
+    }
+
+    /** 设置嵌套顺序第 slot 槽位（0=内环）为环 id，保证整体仍是合法排列 */
+    fun setOrderSlot(slot: Int, id: String) {
+        val newOrder = cfg.ringOrder.toMutableList().also {
+            if (slot < it.size) it[slot] = id else it.add(id)
+        }
+        cfg = cfg.copy(ringOrder = newOrder)
+        commit { it.putString(AnyCyCleConfig.KEY_RING_ORDER, newOrder.joinToString(",")) }
     }
 
     Column(
@@ -215,10 +229,17 @@ fun SettingsScreen() {
                     commit { it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask) }
                 }
                 Text(
-                    "多选时多环嵌套套环显示；默认仅 WiFi",
+                    "各环紧贴摄像头挖孔、由内向外嵌套；默认仅 WiFi（最内环）",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("嵌套顺序（内 → 外）", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OrderSlot("内环", 0, cfg.ringOrder, serviceBound) { setOrderSlot(0, it) }
+                    OrderSlot("中环", 1, cfg.ringOrder, serviceBound) { setOrderSlot(1, it) }
+                    OrderSlot("外环", 2, cfg.ringOrder, serviceBound) { setOrderSlot(2, it) }
+                }
             }
         }
 
@@ -245,16 +266,21 @@ fun SettingsScreen() {
             ) {
                 Text("外观", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 SliderRow(
-                    label = "环外径",
-                    value = cfg.sizeDp,
-                    range = AnyCyCleConfig.SIZE_MIN_DP..AnyCyCleConfig.SIZE_MAX_DP,
-                    decimals = 0,
+                    label = "挖孔半径微调",
+                    value = cfg.cutoutExtraDp,
+                    range = AnyCyCleConfig.CUTOUT_EXTRA_MIN_DP..AnyCyCleConfig.CUTOUT_EXTRA_MAX_DP,
+                    decimals = 1,
                     unit = "dp",
                     enabled = serviceBound,
                 ) { v ->
-                    cfg = cfg.copy(sizeDp = v)
-                    commit { it.putFloat(AnyCyCleConfig.KEY_SIZE_DP, v) }
+                    cfg = cfg.copy(cutoutExtraDp = v)
+                    commit { it.putFloat(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, v) }
                 }
+                Text(
+                    "环大小由挖孔与各环粗细决定，此处微调估算的挖孔半径（正值 = 整体外扩）",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 SliderRow(
                     label = "水平偏移（右为正）",
                     value = cfg.offsetXDp,
@@ -502,6 +528,62 @@ private fun ColorRow(label: String, current: Int, enabled: Boolean = true, onPic
     }
 }
 
+/**
+ * 嵌套顺序槽位选择器：点击弹出下拉菜单，选项为未被其他槽位占用的环。
+ */
+@Composable
+private fun OrderSlot(
+    label: String,
+    slot: Int,
+    order: List<String>,
+    enabled: Boolean,
+    onPick: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val all = listOf(
+        AnyCyCleConfig.RING_WIFI_ID,
+        AnyCyCleConfig.RING_SIM1_ID,
+        AnyCyCleConfig.RING_SIM2_ID,
+    )
+    val current = order.getOrNull(slot) ?: all[slot]
+    // 选项 = 全部环 ID，排除其他槽位已占用的（自身除外）
+    val options = all.filter { opt -> opt == current || order.none { it == opt } }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box {
+            OutlinedButton(
+                enabled = enabled,
+                onClick = { expanded = true },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+            ) {
+                Text(ringLabel(current), fontSize = 13.sp)
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                options.forEach { opt ->
+                    DropdownMenuItem(
+                        text = { Text(ringLabel(opt)) },
+                        onClick = {
+                            expanded = false
+                            onPick(opt)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun ringLabel(id: String): String = when (id) {
+    AnyCyCleConfig.RING_WIFI_ID -> "WiFi"
+    AnyCyCleConfig.RING_SIM1_ID -> "SIM 1"
+    AnyCyCleConfig.RING_SIM2_ID -> "SIM 2"
+    else -> id
+}
+
 @Composable
 private fun StatusCard(title: String, detail: String, error: Boolean) {
     val container = if (error) {
@@ -654,6 +736,23 @@ private fun formatNum(v: Float, decimals: Int): String =
     } else {
         String.format(Locale.US, "%.${decimals}f", v)
     }
+
+/**
+ * v1.1 一次性迁移：挖孔中心垂直校正（+0.5dp）已内置到绘制层，
+ * 把历史版本手动补偿的垂直偏移清零，避免双重偏移。只执行一次。
+ */
+private fun migrateV11(p: SharedPreferences) {
+    try {
+        if (p.getBoolean(AnyCyCleConfig.KEY_MIGRATED_V11, false)) return
+        val editor = p.edit()
+        if (p.getFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, 0f) != 0f) {
+            editor.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, 0f)
+        }
+        editor.putBoolean(AnyCyCleConfig.KEY_MIGRATED_V11, true).apply()
+    } catch (t: Throwable) {
+        t.printStackTrace()
+    }
+}
 
 private val PALETTE = longArrayOf(
     0xFFFFFFFF, 0xFF000000, 0xFF9E9E9E,

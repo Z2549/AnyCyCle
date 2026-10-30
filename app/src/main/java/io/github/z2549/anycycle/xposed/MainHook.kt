@@ -14,6 +14,7 @@ import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
+import org.json.JSONArray
 import org.json.JSONObject
 import java.lang.reflect.Method
 
@@ -195,7 +196,7 @@ class MainHook : XposedModule() {
             log(
                 Log.WARN, TAG,
                 "cfg: enabled=${cfg.enabled} mask=${cfg.displayMask} hideIcons=${cfg.hideIcons} " +
-                    "size=${cfg.sizeDp} wifiRules=${cfg.wifi.rules.size}",
+                    "order=${cfg.ringOrder} wifiRules=${cfg.wifi.rules.size}",
             )
         }
         val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -300,9 +301,11 @@ class MainHook : XposedModule() {
     private fun buildViewConfigJson(cfg: AnyCyCleConfig.Cfg): String {
         val o = JSONObject()
         o.put("mask", cfg.displayMask)
-        o.put("size", cfg.sizeDp.toDouble())
         o.put("ox", cfg.offsetXDp.toDouble())
         o.put("oy", cfg.offsetYDp.toDouble())
+        o.put("cutoutExtra", cfg.cutoutExtraDp.toDouble())
+        // 嵌套顺序（内 → 外），SignalRingView 按此从挖孔边缘向外堆叠
+        o.put("order", JSONArray(cfg.ringOrder))
         o.put("wifi", JSONObject(AnyCyCleConfig.ringToJson(cfg.wifi)))
         o.put("sim1", JSONObject(AnyCyCleConfig.ringToJson(cfg.sim1)))
         o.put("sim2", JSONObject(AnyCyCleConfig.ringToJson(cfg.sim2)))
