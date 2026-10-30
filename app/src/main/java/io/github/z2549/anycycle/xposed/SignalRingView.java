@@ -64,8 +64,8 @@ public class SignalRingView extends View {
     /** 相邻两环之间的间距（dp）：0 = 互相紧贴（用户要求） */
     private static final float RING_GAP_DP = 0f;
 
-    /** 挖孔中心垂直校正（dp）：小米 15 实测系统报告的 cutout 中心比视觉中心高约 0.5dp */
-    private static final float CUTOUT_Y_CORRECTION_DP = 0.5f;
+    /** 挖孔中心垂直校正（dp）：小米 15 实测系统报告的 cutout 中心比视觉中心高约 0.6dp（张总逐环比对实测） */
+    private static final float CUTOUT_Y_CORRECTION_DP = 0.6f;
 
     // ------------------------------------------------------------------
     // 档位变色规则（不可变，applyConfig 时整体替换）
