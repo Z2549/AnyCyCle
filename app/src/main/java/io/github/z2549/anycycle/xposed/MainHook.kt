@@ -7,6 +7,7 @@ import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import dalvik.system.PathClassLoader
@@ -26,8 +27,10 @@ import java.lang.reflect.Method
  * 架构（借鉴 imRoxy2222/lsp_CycleBattery 的悬浮窗注入方案）：
  *  - 唯一的框架 Hook 是 Instrumentation#callApplicationOnCreate（永不混淆），
  *    在 SystemUI Application 创建后拿到上下文；
- *  - 通过 WindowManager 添加全屏透明、不可触摸的系统内部窗口
- *    （TYPE_STATUS_BAR_SUB_PANEL），由纯 Java 的 SignalRingView 绘制嵌套信号环；
+ *  - 通过 WindowManager 添加不可触摸的系统内部窗口（TYPE_STATUS_BAR_ADDITIONAL），
+ *    窗口只覆盖挖孔附近的局部区域（2R×2R，半径由 SignalRingView 按配置自报），
+ *    由纯 Java 的 SignalRingView 绘制嵌套信号环——避免全屏 layer 的整屏级
+ *    合成重算与对 LTPO 刷新率决策的干扰；
  *  - 图标隐藏（借鉴 HyperCeiler 的 IconsFromSystemManager 实现）：Hook
  *    StatusBarIconControllerImpl#setIcon / #setIconVisibility，将显示环对应的
  *    原版状态栏图标（wifi / mobile / no_sim 等 slot）的 visible 置 false。
@@ -214,6 +217,7 @@ class MainHook : XposedModule() {
 
         val view = overlayView
         if (view != null) {
+            // 已存在的窗口：applyConfig 后按 View 自报半径校正窗口尺寸/位置
             applyViewConfig(view)
             return
         }
@@ -228,24 +232,31 @@ class MainHook : XposedModule() {
         }
 
         try {
-            wm.addView(created, buildParams())
+            // 首帧 View 尚未 attach、无法自报半径，按 MainHook 估算值建局部窗口；
+            // addView 后 applyViewConfig 会用 View 的权威半径校正
+            wm.addView(created, buildParams(cfg, estimateRequiredRadiusPx(cfg)))
             overlayView = created
-            log(Log.WARN, TAG, "signal ring overlay added")
+            log(Log.WARN, TAG, "signal ring overlay added (local window)")
         } catch (t: Throwable) {
             log(Log.ERROR, TAG, "addView failed", t)
             return
         }
         applyViewConfig(created)
+        scheduleWindowCalibration(created)
     }
 
     /**
-     * 全屏透明系统窗口参数（借鉴 lsp_CycleBattery）：
-     * 类型优先 TYPE_STATUS_BAR_ADDITIONAL（状态栏附加浮层，z 序在状态栏层，不被
-     * statusBar inset 推到状态栏下方——实测 SUB_PANEL 会被推到 y=140 处），
-     * 回退 TYPE_STATUS_BAR_SUB_PANEL / TYPE_APPLICATION_OVERLAY。
-     * NOT_TOUCHABLE 保证不遮挡触摸。
+     * 环悬浮窗参数：只覆盖挖孔附近的局部窗口（2R × 2R），不再全屏——
+     * 全屏 layer 每次配置变更都要整屏级重算合成，且对 LTPO 刷新率决策有额外干扰。
+     *
+     * 类型仍优先 TYPE_STATUS_BAR_ADDITIONAL（回退 TYPE_STATUS_BAR_SUB_PANEL /
+     * TYPE_APPLICATION_OVERLAY）。该类型被 WMS policy 垂直下推一个状态栏高度
+     * （实测 frame.top = y + sbh），y 里先抵消；x 不被策略改写。
+     *
+     * @param radiusPx 覆盖全部启用环所需的外接半径 px（View 自报或 MainHook 估算）；
+     *                 <= 0 时兜底回退全屏窗口（旧行为）
      */
-    private fun buildParams(): WindowManager.LayoutParams {
+    private fun buildParams(cfg: AnyCyCleConfig.Cfg, radiusPx: Float): WindowManager.LayoutParams {
         val wmLp = WindowManager.LayoutParams::class.java
         val type = listOf("TYPE_STATUS_BAR_ADDITIONAL", "TYPE_STATUS_BAR_SUB_PANEL")
             .mapNotNull { name ->
@@ -256,45 +267,205 @@ class MainHook : XposedModule() {
                 }
             }
             .firstOrNull() ?: WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        return WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            type,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
+        val flags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        val dm = appContext?.resources?.displayMetrics
+        val sbh = statusBarHeightPx()
+        val density = dm?.density ?: 3f
+        val screenW = dm?.widthPixels ?: 1080
+
+        if (radiusPx <= 0f || sbh <= 0) {
+            // 兜底：拿不到环半径（反射失败/无状态栏高度）时回退全屏窗口
+            return WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                type,
+                flags,
+                PixelFormat.TRANSLUCENT,
+            ).apply {
+                title = "AnyCyCleRing"
+                try {
+                    setFitInsetsTypes(0)
+                } catch (_: Throwable) {
+                }
+                y = -sbh
+            }
+        }
+
+        // 环中心估计：屏幕水平中心 + 用户水平偏移；垂直 = 状态栏中线 + 用户垂直偏移。
+        // View 端另有 0.6dp 垂直校正与 cutout 锚点精修，半径里的 6dp 余量可覆盖其差值。
+        val cx = screenW / 2f + cfg.offsetXDp * density
+        val cy = sbh / 2f + cfg.offsetYDp * density
+        val size = (radiusPx * 2f + 0.5f).toInt().coerceAtLeast((8f * density).toInt())
+
+        return WindowManager.LayoutParams(size, size, type, flags, PixelFormat.TRANSLUCENT).apply {
             title = "AnyCyCleRing"
-            // 不 fit 任何 inset，窗口铺满全屏含状态栏区域
+            gravity = Gravity.TOP or Gravity.START
             try {
                 setFitInsetsTypes(0)
             } catch (_: Throwable) {
             }
-            // STATUS_BAR_ADDITIONAL / SUB_PANEL 类型被 WMS policy 强制定位在状态栏下方
-            // （实测 frame=[0,140][1200,2670]），用负 y 偏移把窗口顶回状态栏区域。
-            try {
-                val res = appContext?.resources
-                val sbh = res?.getDimensionPixelSize(
-                    res.getIdentifier("status_bar_height", "dimen", "android")
-                ) ?: 0
-                if (sbh > 0) y = -sbh
-            } catch (_: Throwable) {
-            }
+            // 显式锚定左上角：HyperOS 对该类型局部窗口的 x/y 实测按屏幕中心
+            // 语义解释（actual = (屏宽-窗宽)/2 + x），不显式声明 gravity 时
+            // 默认值会被 WMS policy 改写成居中——这里锚定后由 attach 后的
+            // scheduleWindowCalibration 实测兜底（若仍被改写则一步收敛纠正）。
+            x = (cx - size / 2f).toInt()
+            y = (cy - size / 2f).toInt()
         }
     }
 
-    /** 通过反射调用 SignalRingView.applyConfig(String json)（纯 Java 类，避免 Kotlin Intrinsics 问题） */
-    private fun applyViewConfig(view: View) {
-        try {
+    /**
+     * 通过反射调用 SignalRingView.applyConfig(String)（纯 Java 类，避免 Kotlin Intrinsics 问题）。
+     *
+     * @return View 自报的所需外接半径 px；<=0 表示调用失败（签名不匹配/异常），
+     *         调用方保持现有窗口不动（buildParams 会兜底全屏）。
+     */
+    private fun applyViewConfig(view: View): Float {
+        val radius: Float = try {
             val json = buildViewConfigJson(readCfg())
             val m = view.javaClass.getMethod("applyConfig", String::class.java)
-            m.invoke(view, json)
+            (m.invoke(view, json) as? Float) ?: -1f
         } catch (t: Throwable) {
             log(Log.WARN, TAG, "apply view config failed", t)
+            -1f
         }
+        if (radius <= 0f) return radius
+
+        // 窗口尺寸/位置按 View 自报半径校正（首帧估算偏差、配置变化都会走到这里）
+        try {
+            val want = buildParams(readCfg(), radius)
+            val cur = view.layoutParams as? WindowManager.LayoutParams
+            if (cur == null || cur.width != want.width || cur.height != want.height ||
+                cur.x != want.x || cur.y != want.y
+            ) {
+                val wm = view.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                wm.updateViewLayout(view, want)
+                scheduleWindowCalibration(view)
+            }
+        } catch (t: Throwable) {
+            log(Log.WARN, TAG, "update window frame failed", t)
+        }
+        return radius
+    }
+
+    private fun statusBarHeightPx(): Int = try {
+        val res = appContext?.resources
+        res?.getDimensionPixelSize(
+            res.getIdentifier("status_bar_height", "dimen", "android")
+        ) ?: 0
+    } catch (_: Throwable) {
+        0
+    }
+
+    /**
+     * 窗口位置收敛校准。
+     *
+     * WMS 对 TYPE_STATUS_BAR_ADDITIONAL 局部窗口的实际落点与请求 x/y 之间的映射
+     * 因 ROM 而异（HyperOS 实测把未显式声明 gravity 的窗口按屏幕中心语义摆放：
+     * actual = (屏宽-窗宽)/2 + x），且偏移随窗口尺寸变化、非常量——
+     * 不能像旧版那样存成全局 policyDelta 复用（会在尺寸变化时发散）。
+     *
+     * 这里改为收敛式：attach 后实测 actual 与期望锚点（环中心 - 窗半径）的差，
+     * 直接把差值补进当前 lp 并 updateViewLayout；若一步未收敛（如布局尚未生效），
+     * 最多重试 3 轮。calibrating 标志去重调度（syncOverlayInternal 的 addView 路径
+     * 与 applyViewConfig 的尺寸变化路径可能接连触发）。
+     */
+    private var calibrating = false
+
+    private fun scheduleWindowCalibration(view: View, attempt: Int = 1) {
+        if (attempt > 3 || calibrating) return
+        calibrating = true
+        view.postDelayed({
+            calibrating = false
+            try {
+                val lp = view.layoutParams as? WindowManager.LayoutParams ?: return@postDelayed
+                val cfg = readCfg()
+                val dm = view.resources.displayMetrics
+                val size = lp.width
+                val tx = (dm.widthPixels / 2f + cfg.offsetXDp * dm.density - size / 2f).toInt()
+                val ty = (statusBarHeightPx() / 2f + cfg.offsetYDp * dm.density - size / 2f).toInt()
+                val loc = IntArray(2)
+                view.getLocationOnScreen(loc)
+                val dx = loc[0] - tx
+                val dy = loc[1] - ty
+                if (dx != 0 || dy != 0) {
+                    lp.x += dx
+                    lp.y += dy
+                    val wm =
+                        view.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    wm.updateViewLayout(view, lp)
+                    log(
+                        Log.WARN, TAG,
+                        "window calibrated: actual=(${loc[0]},${loc[1]}) target=($tx,$ty) " +
+                            "apply delta=($dx,$dy) frame=(${lp.x},${lp.y}) ${lp.width}x${lp.height}",
+                    )
+                    // 布局异步生效，再测一轮确认收敛（scheduleWindowCalibration 会因
+                    // calibrating=false 而重新排队）
+                    view.postDelayed({ scheduleWindowCalibration(view, attempt + 1) }, 400L)
+                } else {
+                    log(
+                        Log.WARN, TAG,
+                        "window verified at ($tx,$ty) ${lp.width}x${lp.height}",
+                    )
+                }
+            } catch (t: Throwable) {
+                log(Log.WARN, TAG, "window calibration failed", t)
+            }
+        }, 400L)
+    }
+
+    /** 估算挖孔半径 px（Display 级 cutout；拿不到回退状态栏高度的 32%，与 View 端口径一致） */
+    private fun estimateCutoutRadiusPx(sbh: Int): Float {
+        val ctx = appContext ?: return sbh * 0.32f
+        val dm = ctx.resources.displayMetrics
+        return try {
+            val rect = ctx.display?.cutout?.boundingRectTop
+            if (rect != null && !rect.isEmpty) {
+                minOf(rect.width(), rect.height()) / 2f
+            } else {
+                sbh * 0.32f
+            }
+        } catch (_: Throwable) {
+            sbh * 0.32f
+        }
+    }
+
+    /**
+     * 估算环外接半径 px（首帧建窗用，口径与 SignalRingView.requiredRadiusPx 一致：
+     * cutout 半径 + EDGE_GAP + 各启用环粗细（含环间分割线）+ 6dp 余量）。
+     * attach 后由 View 自报半径校正。
+     */
+    private fun estimateRequiredRadiusPx(cfg: AnyCyCleConfig.Cfg): Float {
+        val dm = appContext?.resources?.displayMetrics ?: return -1f
+        val sbh = statusBarHeightPx()
+        if (sbh <= 0) return -1f
+        val d = dm.density
+        var cursor = estimateCutoutRadiusPx(sbh) + 1f * d
+        val divW = cfg.dividerWidthDp * d
+        var drewAny = false
+        for (id in cfg.ringOrder) {
+            val ring: AnyCyCleConfig.RingCfg?
+            val bit: Int
+            when (id) {
+                AnyCyCleConfig.RING_WIFI_ID -> {
+                    ring = cfg.wifi; bit = AnyCyCleConfig.BIT_WIFI
+                }
+                AnyCyCleConfig.RING_SIM1_ID -> {
+                    ring = cfg.sim1; bit = AnyCyCleConfig.BIT_SIM1
+                }
+                else -> {
+                    ring = cfg.sim2; bit = AnyCyCleConfig.BIT_SIM2
+                }
+            }
+            if (ring == null || cfg.displayMask and bit == 0) continue
+            if (drewAny && divW > 0.5f) cursor += divW
+            cursor += maxOf(ring.strokeDp * d, 1f)
+            drewAny = true
+        }
+        return cursor + 6f * d
     }
 
     /** 组装推送给 SignalRingView 的配置 JSON（与 AnyCyCleConfig 的序列化格式一致） */

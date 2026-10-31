@@ -201,8 +201,11 @@ public class SignalRingView extends View {
      *               "rules":[{"en":true,"max":0,"color":-1}, ...]},
      *       "sim1":{...}, "sim2":{...} }</pre>
      * order 为嵌套顺序（内 → 外），各环自挖孔边缘起向外紧贴堆叠。
+     *
+     * @return 覆盖当前配置全部启用环所需的外接半径（px，含余量）。
+     *         MainHook 据此把悬浮窗收缩为环附近的局部窗口（避免全屏 layer）。
      */
-    public void applyConfig(String json) {
+    public float applyConfig(String json) {
         try {
             JSONObject o = new JSONObject(json);
             mask = o.optInt("mask", BIT_WIFI);
@@ -215,10 +218,11 @@ public class SignalRingView extends View {
             wifiConf = parseRing(o.optJSONObject("wifi"), 0xFFFFFFFF);
             sim1Conf = parseRing(o.optJSONObject("sim1"), 0xFF2196F3);
             sim2Conf = parseRing(o.optJSONObject("sim2"), 0xFFAB47BC);
-            postInvalidate();
         } catch (Throwable ignored) {
             // 配置解析失败保持旧配置，绝不抛出
         }
+        postInvalidate();
+        return requiredRadiusPx();
     }
 
     // ------------------------------------------------------------------
@@ -700,7 +704,8 @@ public class SignalRingView extends View {
             }
         } catch (Throwable ignored) {
         }
-        out[0] = getWidth() / 2f;
+        // 找不到挖孔时回退屏幕顶部中央（屏幕坐标系；注意小窗口下 getWidth() ≠ 屏幕宽）
+        out[0] = getResources().getDisplayMetrics().widthPixels / 2f;
         out[1] = statusBarHeightPx() / 2f + dp(CUTOUT_Y_CORRECTION_DP);
         return out;
     }
@@ -730,6 +735,42 @@ public class SignalRingView extends View {
         }
         r += cutoutExtraDp * getResources().getDisplayMetrics().density;
         return Math.max(r, dp(4f));
+    }
+
+    /** 取启用（mask 内）环的配置；未启用的环返回 null（不会被绘制，也不占位） */
+    private RingConf confIfMasked(int ringId, int m) {
+        switch (ringId) {
+            case RING_SIM1:
+                return (m & BIT_SIM1) != 0 ? sim1Conf : null;
+            case RING_SIM2:
+                return (m & BIT_SIM2) != 0 ? sim2Conf : null;
+            case RING_WIFI:
+            default:
+                return (m & BIT_WIFI) != 0 ? wifiConf : null;
+        }
+    }
+
+    /**
+     * 覆盖当前配置全部启用环所需的外接半径（px，含 6dp 余量）。
+     * 上界口径：假设所有启用环的档位均有效——档位出现/消失时窗口尺寸保持稳定不抖动
+     * （drawRings 里 level&lt;0 的环虽然跳过，但占用位置的上界与此一致）。
+     * MainHook 据此把悬浮窗从全屏收缩为挖孔附近的局部窗口。
+     */
+    public float requiredRadiusPx() {
+        float density = getResources().getDisplayMetrics().density;
+        float cursor = cutoutRadiusPx() + dp(EDGE_GAP_DP);
+        int m = mask;
+        int[] order = ringOrder;
+        float divW = dividerWidthDp * density;
+        boolean drewAny = false;
+        for (int i = 0; i < order.length; i++) {
+            RingConf conf = confIfMasked(order[i], m);
+            if (conf == null) continue;
+            if (drewAny && divW > 0.5f) cursor += divW;
+            cursor += Math.max(conf.strokeDp * density, 1f);
+            drewAny = true;
+        }
+        return cursor + dp(6f);
     }
 
     private Rect cutoutRect(DisplayCutout cutout) {
