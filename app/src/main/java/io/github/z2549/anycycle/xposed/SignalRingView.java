@@ -130,8 +130,13 @@ public class SignalRingView extends View {
         @Override
         public void onCapabilitiesChanged(Network network, NetworkCapabilities networkCapabilities) {
             try {
-                wifiLevel = normalizeWifiLevel(networkCapabilities);
-                postInvalidate();
+                // 档位判重：HyperOS 会周期性推送 capabilities（Portal 扫描间隔数秒一次），
+                // 档位没变不重绘，避免小窗区域的无效 invalidate
+                int newLevel = normalizeWifiLevel(networkCapabilities);
+                if (newLevel != wifiLevel) {
+                    wifiLevel = newLevel;
+                    postInvalidate();
+                }
             } catch (Throwable ignored) {
             }
         }
@@ -139,8 +144,10 @@ public class SignalRingView extends View {
         @Override
         public void onLost(Network network) {
             try {
-                wifiLevel = -1;
-                postInvalidate();
+                if (wifiLevel != -1) {
+                    wifiLevel = -1;
+                    postInvalidate();
+                }
             } catch (Throwable ignored) {
             }
         }
@@ -148,8 +155,10 @@ public class SignalRingView extends View {
         @Override
         public void onUnavailable() {
             try {
-                wifiLevel = -1;
-                postInvalidate();
+                if (wifiLevel != -1) {
+                    wifiLevel = -1;
+                    postInvalidate();
+                }
             } catch (Throwable ignored) {
             }
         }
@@ -464,12 +473,18 @@ public class SignalRingView extends View {
 
     private void setSimLevel(int slot, int level) {
         int clamped = (level < 0 || level > 4) ? -1 : level;
+        // 档位判重：信号强度回调同样高频（含轮询推送），档位没变不重绘
         if (slot == 0) {
-            sim1Level = clamped;
+            if (sim1Level != clamped) {
+                sim1Level = clamped;
+                postInvalidate();
+            }
         } else if (slot == 1) {
-            sim2Level = clamped;
+            if (sim2Level != clamped) {
+                sim2Level = clamped;
+                postInvalidate();
+            }
         }
-        postInvalidate();
     }
 
     /**
