@@ -7,6 +7,7 @@ import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import dalvik.system.PathClassLoader
@@ -302,15 +303,17 @@ class MainHook : XposedModule() {
 
         return WindowManager.LayoutParams(size, size, type, flags, PixelFormat.TRANSLUCENT).apply {
             title = "AnyCyCleRing"
+            gravity = Gravity.TOP or Gravity.START
             try {
                 setFitInsetsTypes(0)
             } catch (_: Throwable) {
             }
-            // WMS 对该类型的策略偏移（actual - requested）不固定：全屏窗口实测为 +sbh，
-            // 局部窗口实测为 0（HyperOS）。不做硬编码抵消，由 attach 后的
-            // scheduleWindowCalibration 实测 policyDelta 并在此补偿。
-            x = (cx - size / 2f).toInt() - policyDelta[0]
-            y = (cy - size / 2f).toInt() - policyDelta[1]
+            // 显式锚定左上角：HyperOS 对该类型局部窗口的 x/y 实测按屏幕中心
+            // 语义解释（actual = (屏宽-窗宽)/2 + x），不显式声明 gravity 时
+            // 默认值会被 WMS policy 改写成居中——这里锚定后由 attach 后的
+            // scheduleWindowCalibration 实测兜底（若仍被改写则一步收敛纠正）。
+            x = (cx - size / 2f).toInt()
+            y = (cy - size / 2f).toInt()
         }
     }
 
@@ -358,37 +361,54 @@ class MainHook : XposedModule() {
     }
 
     /**
-     * WMS 对环窗口的策略偏移实测值（actual frame origin - requested x/y）。
-     * 该值随 ROM 与窗口尺寸而异（全屏窗口实测 +sbh、局部窗口实测 0），
-     * 首帧按 0 放置，attach 后由 scheduleWindowCalibration 实测回填。
+     * 窗口位置收敛校准。
+     *
+     * WMS 对 TYPE_STATUS_BAR_ADDITIONAL 局部窗口的实际落点与请求 x/y 之间的映射
+     * 因 ROM 而异（HyperOS 实测把未显式声明 gravity 的窗口按屏幕中心语义摆放：
+     * actual = (屏宽-窗宽)/2 + x），且偏移随窗口尺寸变化、非常量——
+     * 不能像旧版那样存成全局 policyDelta 复用（会在尺寸变化时发散）。
+     *
+     * 这里改为收敛式：attach 后实测 actual 与期望锚点（环中心 - 窗半径）的差，
+     * 直接把差值补进当前 lp 并 updateViewLayout；若一步未收敛（如布局尚未生效），
+     * 最多重试 3 轮。calibrating 标志去重调度（syncOverlayInternal 的 addView 路径
+     * 与 applyViewConfig 的尺寸变化路径可能接连触发）。
      */
-    private val policyDelta = IntArray(2)
+    private var calibrating = false
 
-    /** 在窗口完成一轮布局后实测策略偏移；有偏差就更新 policyDelta 并立即纠正窗口位置 */
-    private fun scheduleWindowCalibration(view: View) {
+    private fun scheduleWindowCalibration(view: View, attempt: Int = 1) {
+        if (attempt > 3 || calibrating) return
+        calibrating = true
         view.postDelayed({
+            calibrating = false
             try {
                 val lp = view.layoutParams as? WindowManager.LayoutParams ?: return@postDelayed
+                val cfg = readCfg()
+                val dm = view.resources.displayMetrics
+                val size = lp.width
+                val tx = (dm.widthPixels / 2f + cfg.offsetXDp * dm.density - size / 2f).toInt()
+                val ty = (statusBarHeightPx() / 2f + cfg.offsetYDp * dm.density - size / 2f).toInt()
                 val loc = IntArray(2)
                 view.getLocationOnScreen(loc)
-                val dx = loc[0] - lp.x
-                val dy = loc[1] - lp.y
+                val dx = loc[0] - tx
+                val dy = loc[1] - ty
                 if (dx != 0 || dy != 0) {
-                    policyDelta[0] = dx
-                    policyDelta[1] = dy
-                    lp.x -= dx
-                    lp.y -= dy
+                    lp.x += dx
+                    lp.y += dy
                     val wm =
                         view.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                     wm.updateViewLayout(view, lp)
                     log(
                         Log.WARN, TAG,
-                        "window calibrated: policyDelta=($dx,$dy) frame=(${lp.x},${lp.y}) ${lp.width}x${lp.height}",
+                        "window calibrated: actual=(${loc[0]},${loc[1]}) target=($tx,$ty) " +
+                            "apply delta=($dx,$dy) frame=(${lp.x},${lp.y}) ${lp.width}x${lp.height}",
                     )
+                    // 布局异步生效，再测一轮确认收敛（scheduleWindowCalibration 会因
+                    // calibrating=false 而重新排队）
+                    view.postDelayed({ scheduleWindowCalibration(view, attempt + 1) }, 400L)
                 } else {
                     log(
                         Log.WARN, TAG,
-                        "window calibrated: no policy offset frame=(${lp.x},${lp.y}) ${lp.width}x${lp.height}",
+                        "window verified at ($tx,$ty) ${lp.width}x${lp.height}",
                     )
                 }
             } catch (t: Throwable) {
