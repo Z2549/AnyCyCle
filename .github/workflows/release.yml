@@ -47,9 +47,26 @@ jobs:
       - name: Build release APK
         run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
 
+      - name: Compute version (versionCode = commit count)
+        id: ver
+        run: |
+          CODE=$(git rev-list --count HEAD)
+          NAME=$(grep -m1 'versionName' app/build.gradle.kts | sed 's/.*"\(.*\)".*/\1/')
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version: $CODE-$NAME"
+
+      # Xposed-Modules-Repo 要求 Release tag 为 [versionCode]-[versionName]，
+      # asset 必须是 .apk：bot 检测后 5~60 分钟内自动上架 LSPosed 在线仓库
+      - name: Rename APK for release asset
+        run: cp app/build/outputs/apk/release/app-release.apk "AnyCyCle-v${{ steps.ver.outputs.name }}-${{ steps.ver.outputs.code }}.apk"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: AnyCyCle v${{ github.ref_name }}
-          files: app/build/outputs/apk/release/app-release.apk
+          tag_name: ${{ steps.ver.outputs.code }}-${{ steps.ver.outputs.name }}
+          name: AnyCyCle v${{ steps.ver.outputs.name }}
+          body: |
+            见 [版本历史](https://github.com/Z2549/AnyCyCle#版本历史)。
+          files: AnyCyCle-v${{ steps.ver.outputs.name }}-${{ steps.ver.outputs.code }}.apk
           fail_on_unmatched_files: true

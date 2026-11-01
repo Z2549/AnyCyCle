@@ -5,7 +5,7 @@
 - 应用名：AnyCyCle
 - 包名：`io.github.z2549.anycycle`
 - minSdk 35 / targetSdk 36 / compileSdk 37
-- AGP 8.13.1 + Gradle 8.13 + Kotlin 2.2.10
+- AGP 9.4.1 + Gradle 9.8.2 + Kotlin 2.3.21 + Compose BOM 2026.09.00（HyperOS 风格 miuix UI）
 - 许可证：AGPL-3.0-only
 
 ## 功能
@@ -99,7 +99,7 @@
 | 工作流 | 触发 | 作用 |
 | --- | --- | --- |
 | `build.yml` | push 到 main（忽略纯 md）/ PR | 构建 debug + release APK 并上传 artifact |
-| `release.yml` | 推送 `v*` tag | 构建 release APK 并发布 GitHub Release（`AnyCyCle v<tag>`） |
+| `release.yml` | 推送 `v*` tag | 构建 release APK 并发布 GitHub Release（tag 自动按 `[versionCode]-[versionName]` 命名，适配 Xposed-Modules-Repo 收录格式） |
 | `pr-review.yml` | PR | Android Lint + reviewdog 行内评论 + 审阅汇总评论 |
 
 CI 通过以下 GitHub Secrets 还原签名（均需 Base64）：
@@ -166,3 +166,5 @@ AnyCyCle 的以下内容为原创实现：
 | v1.1 | 多环嵌套重构：内外顺序可调、累进制布局、挖孔中心校正 0.6dp |
 | v1.2 | 顺序修复、HyperOS `stacked_mobile` 隐藏、四页 UI、选色器、分割线、备份 |
 | v1.2.1 | 5G 网络类型标识联动隐藏；开关状态乐观更新修复 |
+| v1.2.2 | 悬浮窗局部化（全屏 → 挖孔附近小窗）+ 显式 gravity 校准，重绘抖动大幅下降 |
+| v1.2.3 | 信号档位判重；设置界面重构为 HyperOS 风格（miuix：大标题 + 悬浮底栏） |
