@@ -69,7 +69,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -315,6 +314,9 @@ fun RootScreen() {
             label = "pageSwitch",
             modifier = Modifier
                 .fillMaxSize()
+                // Scaffold 约定：content 必须整体消费 padding（top=顶栏高度含状态栏、
+                // bottom=底栏高度），否则内容顶到 TopAppBar 背后被遮挡
+                .padding(padding)
                 // 列表滚动驱动顶栏大标题收缩（HyperOS 行为）
                 .nestedScroll(scrollBehavior.nestedScrollConnection),
         ) { p ->
@@ -324,25 +326,21 @@ fun RootScreen() {
                     serviceBound = serviceBound,
                     commitWith = { u, b -> commitWith(u, b) },
                     setOrderSlot = { s, id -> setOrderSlot(s, id) },
-                    bottomPadding = padding.calculateBottomPadding(),
                 )
                 PAGE_WIFI -> RingPage(
                     ringId = AnyCyCleConfig.RING_WIFI_ID,
                     ring = cfg.wifi,
                     controlsEnabled = serviceBound,
-                    bottomPadding = padding.calculateBottomPadding(),
                 ) { updateRing(AnyCyCleConfig.KEY_RING_WIFI, it) }
                 PAGE_SIM1 -> RingPage(
                     ringId = AnyCyCleConfig.RING_SIM1_ID,
                     ring = cfg.sim1,
                     controlsEnabled = serviceBound,
-                    bottomPadding = padding.calculateBottomPadding(),
                 ) { updateRing(AnyCyCleConfig.KEY_RING_SIM1, it) }
                 else -> RingPage(
                     ringId = AnyCyCleConfig.RING_SIM2_ID,
                     ring = cfg.sim2,
                     controlsEnabled = serviceBound,
-                    bottomPadding = padding.calculateBottomPadding(),
                 ) { updateRing(AnyCyCleConfig.KEY_RING_SIM2, it) }
             }
         }
@@ -359,7 +357,6 @@ private fun HomePage(
     serviceBound: Boolean,
     commitWith: ((AnyCyCleConfig.Cfg) -> AnyCyCleConfig.Cfg, (SharedPreferences.Editor) -> Unit) -> Unit,
     setOrderSlot: (Int, String) -> Unit,
-    bottomPadding: Dp,
 ) {
     val context = LocalContext.current
 
@@ -667,9 +664,6 @@ private fun HomePage(
             detail = "所有参数即时生效，无需重启系统界面；隐藏图标等少数状态相关设置切换后，可点右上角按钮重启\"系统界面\"强制刷新。",
             error = false,
         )
-
-        // 悬浮底栏浮在内容之上，列表底部留出其高度
-        Spacer(modifier = Modifier.height(bottomPadding))
     }
 }
 
@@ -682,7 +676,6 @@ private fun RingPage(
     ringId: String,
     ring: AnyCyCleConfig.RingCfg,
     controlsEnabled: Boolean,
-    bottomPadding: Dp,
     onUpdate: (AnyCyCleConfig.RingCfg) -> Unit,
 ) {
     Column(
@@ -752,8 +745,6 @@ private fun RingPage(
             }
             Spacer(modifier = Modifier.height(6.dp))
         }
-
-        Spacer(modifier = Modifier.height(bottomPadding))
     }
 }
 
