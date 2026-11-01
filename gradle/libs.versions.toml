@@ -1,10 +1,13 @@
 [versions]
-agp = "8.13.1"
-kotlin = "2.2.10"
+# AGP 9.x：miuix 0.9.4（HyperOS 风格 UI 库）传递依赖 Compose 1.12，其 AAR 元数据要求 AGP 9.1+
+agp = "9.4.1"
+kotlin = "2.3.21"
 coreKtx = "1.15.0"
 lifecycleRuntimeKtx = "2.8.7"
-activityCompose = "1.9.3"
-composeBom = "2024.12.01"
+# activity 1.12+ 提供 NavigationEventDispatcherOwner（Compose 1.12 预测式返回体系必需，
+# 否则 miuix OverlayDialog 点开即崩 IllegalStateException）
+activityCompose = "1.13.0"
+composeBom = "2026.09.00"
 libxposedApi = "102.0.0"
 libxposedService = "102.0.0"
 
