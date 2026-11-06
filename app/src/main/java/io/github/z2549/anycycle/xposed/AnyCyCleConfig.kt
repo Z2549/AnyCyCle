@@ -92,6 +92,47 @@ object AnyCyCleConfig {
     const val STROKE_MAX_DP = 8f
 
     // ------------------------------------------------------------------
+    // 环形状预设（两端一致；SignalRingView.parseRing 按 id 生成段布局）
+    // 分段 = 轨道与进度弧限制在各段弧上，缺口均匀分布；与套环并存、每环二选一不可叠加
+    // ------------------------------------------------------------------
+
+    /** 套环：完整圆（默认，与旧版行为一致） */
+    const val SHAPE_FULL = "full"
+
+    /** 上下半圆：两段 180°，弧段位于上方与下方，缺口在左右（3 点 / 9 点方向） */
+    const val SHAPE_HV = "hv"
+
+    /** 左右半圆：两段 180°，弧段位于右侧与左侧，缺口在上下（12 点 / 6 点方向） */
+    const val SHAPE_HH = "hh"
+
+    /** 左上右下半圆：两段 180°，弧段位于左上与右下，缺口沿右上-左下对角线 */
+    const val SHAPE_D1 = "d1"
+
+    /** 右上左下半圆：两段 180°，弧段位于右上与左下，缺口沿左上-右下对角线 */
+    const val SHAPE_D2 = "d2"
+
+    /** 三叉星辉：三段 120°，缺口朝三个叉（一个朝上、两个朝下侧），呈三叉星辉外圆排布 */
+    const val SHAPE_STAR = "star"
+
+    /** 三叉星辉倒置：上式整体旋转 180°（一叉朝下、两个朝上侧） */
+    const val SHAPE_STAR_I = "stari"
+
+    /** 全部合法形状 id（App 端选择列表 / Hook 端解析兜底用） */
+    val ALL_SHAPES = listOf(SHAPE_FULL, SHAPE_HV, SHAPE_HH, SHAPE_D1, SHAPE_D2, SHAPE_STAR, SHAPE_STAR_I)
+
+    const val DEFAULT_SHAPE = SHAPE_FULL
+
+    /** 自由旋转（度，12 点起顺时针，叠加在预设之上；0-360） */
+    const val DEFAULT_ROTATION_DEG = 0f
+    const val ROTATION_MIN_DEG = 0f
+    const val ROTATION_MAX_DEG = 360f
+
+    /** 缺口宽度（度）：分段圆相邻两段之间的空隙；0 = 首尾相接（视觉等同整圆） */
+    const val DEFAULT_GAP_DEG = 8f
+    const val GAP_MIN_DEG = 0f
+    const val GAP_MAX_DEG = 30f
+
+    // ------------------------------------------------------------------
     // 每环配置模型
     // ------------------------------------------------------------------
 
@@ -110,6 +151,9 @@ object AnyCyCleConfig {
         val strokeDp: Float = 2.5f,
         val baseColor: Int = 0xFFFFFFFF.toInt(),
         val showTrack: Boolean = true,
+        val shape: String = DEFAULT_SHAPE,
+        val rotationDeg: Float = DEFAULT_ROTATION_DEG,
+        val gapDeg: Float = DEFAULT_GAP_DEG,
         val rules: List<ColorRule> = defaultRulesWifi(),
     )
 
@@ -167,6 +211,9 @@ object AnyCyCleConfig {
             .put("stroke", cfg.strokeDp.toDouble())
             .put("baseColor", cfg.baseColor)
             .put("showTrack", cfg.showTrack)
+            .put("shape", cfg.shape)
+            .put("rotation", cfg.rotationDeg.toDouble())
+            .put("gapDeg", cfg.gapDeg.toDouble())
             .put("rules", arr)
             .toString()
     }
@@ -193,6 +240,10 @@ object AnyCyCleConfig {
                 strokeDp = o.optDouble("stroke", fallback.strokeDp.toDouble()).toFloat(),
                 baseColor = o.optInt("baseColor", fallback.baseColor),
                 showTrack = o.optBoolean("showTrack", fallback.showTrack),
+                shape = o.optString("shape", fallback.shape).takeIf { it in ALL_SHAPES }
+                    ?: DEFAULT_SHAPE,
+                rotationDeg = o.optDouble("rotation", fallback.rotationDeg.toDouble()).toFloat(),
+                gapDeg = o.optDouble("gapDeg", fallback.gapDeg.toDouble()).toFloat(),
                 rules = rules.ifEmpty { fallback.rules },
             )
         } catch (_: Throwable) {

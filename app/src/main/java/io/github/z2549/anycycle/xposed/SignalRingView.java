@@ -87,12 +87,29 @@ public class SignalRingView extends View {
         final float strokeDp;
         final int baseColor;
         final boolean showTrack;
+        /** 分段数：1 = 完整套环；2 = 半圆对；3 = 三分圆（三叉星辉） */
+        final int segCount;
+        /** 第一条缺口的中心角（12 点起顺时针，度）；segCount=1 时忽略 */
+        final float firstGapDeg;
+        /** 用户自由旋转（度，12 点起顺时针，叠加在预设之上） */
+        final float rotationDeg;
+        /** 缺口宽度（度）：相邻两段之间的空隙 */
+        final float gapDeg;
         final Rule[] rules;
 
         RingConf(float strokeDp, int baseColor, boolean showTrack, Rule[] rules) {
+            this(strokeDp, baseColor, showTrack, 1, 0f, 0f, 8f, rules);
+        }
+
+        RingConf(float strokeDp, int baseColor, boolean showTrack,
+                 int segCount, float firstGapDeg, float rotationDeg, float gapDeg, Rule[] rules) {
             this.strokeDp = strokeDp;
             this.baseColor = baseColor;
             this.showTrack = showTrack;
+            this.segCount = segCount;
+            this.firstGapDeg = firstGapDeg;
+            this.rotationDeg = rotationDeg;
+            this.gapDeg = gapDeg;
             this.rules = rules;
         }
     }
@@ -247,6 +264,34 @@ public class SignalRingView extends View {
         int baseColor = o.optInt("baseColor", fallbackColor);
         boolean showTrack = o.optBoolean("showTrack", true);
 
+        // 形状预设 → 段数 + 第一缺口中心角（缺口均匀分布，间隔 360/段数；12 点起顺时针）
+        // hv 上下半圆: 弧段在上(0)/下(180) → 缺口 90/270
+        // hh 左右半圆: 弧段在右(90)/左(270) → 缺口 0/180
+        // d1 左上右下: 弧段在左上(315)/右下(135) → 缺口 45/225
+        // d2 右上左下: 弧段在右上(45)/左下(225) → 缺口 135/315
+        // star 三叉星辉: 缺口朝三叉（一叉朝上）0/120/240 → 弧段中心 60/180/300
+        // stari 三叉星辉倒置: star 旋转 180° → 缺口 60/180/300
+        String shape = o.optString("shape", "full");
+        int segCount;
+        float firstGapDeg;
+        if ("hv".equals(shape)) {
+            segCount = 2; firstGapDeg = 90f;
+        } else if ("hh".equals(shape)) {
+            segCount = 2; firstGapDeg = 0f;
+        } else if ("d1".equals(shape)) {
+            segCount = 2; firstGapDeg = 45f;
+        } else if ("d2".equals(shape)) {
+            segCount = 2; firstGapDeg = 135f;
+        } else if ("star".equals(shape)) {
+            segCount = 3; firstGapDeg = 0f;
+        } else if ("stari".equals(shape)) {
+            segCount = 3; firstGapDeg = 60f;
+        } else {
+            segCount = 1; firstGapDeg = 0f;
+        }
+        float rotation = clamp((float) o.optDouble("rotation", 0.0), 0f, 360f);
+        float gapDeg = clamp((float) o.optDouble("gapDeg", 8.0), 0f, 30f);
+
         Rule[] rules = new Rule[0];
         JSONArray arr = o.optJSONArray("rules");
         if (arr != null) {
@@ -265,7 +310,7 @@ public class SignalRingView extends View {
             }
             rules = list.toArray(new Rule[0]);
         }
-        return new RingConf(stroke, baseColor, showTrack, rules);
+        return new RingConf(stroke, baseColor, showTrack, segCount, firstGapDeg, rotation, gapDeg, rules);
     }
 
     /** 解析嵌套顺序（内 → 外）。必须是 {wifi,sim1,sim2} 的完整排列，非法时回退默认（WiFi 最内）。 */
@@ -621,17 +666,59 @@ public class SignalRingView extends View {
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeCap(Paint.Cap.ROUND);
 
-        // 背景轨道：整圆，当前环色，alpha≈15%，同一粗细
-        if (conf.showTrack) {
-            int alpha = (int) (Color.alpha(color) * 0.15f) & 0xFF;
-            paint.setColor((color & 0x00FFFFFF) | (alpha << 24));
-            canvas.drawArc(ringRect, 0f, 360f, false, paint);
+        int clamped = Math.max(0, Math.min(level, 4));
+        int segCount = conf.segCount;
+
+        // 整圆（套环）：原逻辑不变
+        if (segCount <= 1) {
+            if (conf.showTrack) {
+                int alpha = (int) (Color.alpha(color) * 0.15f) & 0xFF;
+                paint.setColor((color & 0x00FFFFFF) | (alpha << 24));
+                canvas.drawArc(ringRect, 0f, 360f, false, paint);
+            }
+            paint.setColor(color);
+            // 进度弧：从 12 点方向顺时针，档位 0-4 → 0-360 度
+            canvas.drawArc(ringRect, -90f, clamped * 90f, false, paint);
+            return;
         }
 
-        // 进度弧：从 12 点方向顺时针，档位 0-4 → 0-360 度
-        int clamped = Math.max(0, Math.min(level, 4));
-        paint.setColor(color);
-        canvas.drawArc(ringRect, -90f, clamped * 90f, false, paint);
+        // ------------------------------------------------------------------
+        // 分段模式（半圆对 / 三叉星辉）：
+        //   段 i 的缺口中心角 = firstGapDeg + i * segStep（12 点起顺时针，均匀分布）
+        //   每段弧从"缺口中心 + gap/2"顺时针画到"下一条缺口中心 - gap/2"
+        //   Android drawArc 0° = 3 点钟方向、顺时针为正 → 12 点 = -90°
+        //   进度弧语义与整圆一致：档位比例 p = level/4 在"虚拟连续弧"（各段首尾
+        //   相接、总长 segCount*span）上从第一段起点顺时针推进，跨段连续；
+        //   满档时所有段画满，0 档无进度弧。
+        // ------------------------------------------------------------------
+        float segStep = 360f / segCount;
+        // 缺口宽度上限：每段至少留 2° 弧，避免极端参数下段消失
+        float gap = Math.min(clamp(conf.gapDeg, 0f, 30f), segStep - 2f);
+        float span = segStep - gap;
+        float rot = conf.rotationDeg;
+
+        // 背景轨道：每段一段（当前环色，alpha≈15%）
+        if (conf.showTrack && span > 0.5f) {
+            int alpha = (int) (Color.alpha(color) * 0.15f) & 0xFF;
+            paint.setColor((color & 0x00FFFFFF) | (alpha << 24));
+            for (int i = 0; i < segCount; i++) {
+                float start = conf.firstGapDeg + gap / 2f + i * segStep + rot;
+                canvas.drawArc(ringRect, start - 90f, span, false, paint);
+            }
+        }
+
+        // 进度弧：跨段连续推进
+        if (clamped > 0 && span > 0.5f) {
+            paint.setColor(color);
+            float total = segCount * span;
+            float remain = total * clamped / 4f;
+            for (int i = 0; i < segCount && remain > 0.01f; i++) {
+                float start = conf.firstGapDeg + gap / 2f + i * segStep + rot;
+                float len = Math.min(remain, span);
+                canvas.drawArc(ringRect, start - 90f, len, false, paint);
+                remain -= span;
+            }
+        }
     }
 
     /** 取第一条 en 且 level <= max 的规则颜色，无匹配用 baseColor（rules 按 max 升序） */

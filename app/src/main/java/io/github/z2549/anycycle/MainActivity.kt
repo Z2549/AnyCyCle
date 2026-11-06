@@ -440,10 +440,6 @@ private fun HomePage(
                 title = "启用 AnyCyCle",
                 enabled = serviceBound,
             )
-        }
-
-        SmallTitle(text = "显示内容")
-        Card(modifier = Modifier.fillMaxWidth()) {
             SwitchPreference(
                 checked = (cfg.displayMask and AnyCyCleConfig.BIT_WIFI) != 0,
                 onCheckedChange = { v ->
@@ -453,7 +449,7 @@ private fun HomePage(
                         it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask)
                     }
                 },
-                title = "WiFi（默认）",
+                title = "显示 WiFi 环（默认）",
                 enabled = serviceBound,
             )
             SwitchPreference(
@@ -465,7 +461,7 @@ private fun HomePage(
                         it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask)
                     }
                 },
-                title = "SIM 卡 1",
+                title = "显示 SIM 卡 1 环",
                 enabled = serviceBound,
             )
             SwitchPreference(
@@ -477,11 +473,11 @@ private fun HomePage(
                         it.putInt(AnyCyCleConfig.KEY_DISPLAY_MASK, newMask)
                     }
                 },
-                title = "SIM 卡 2",
+                title = "显示 SIM 卡 2 环",
                 enabled = serviceBound,
             )
             Text(
-                "各环紧贴摄像头挖孔、由内向外嵌套；默认仅 WiFi（最内环）",
+                "各环紧贴摄像头挖孔、由内向外嵌套；每环的形状、颜色等详细设置在底部导航的 WiFi / SIM 1 / SIM 2 页",
                 fontSize = 12.sp,
                 lineHeight = 17.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -496,7 +492,7 @@ private fun HomePage(
             OrderSlot("外环", 2, cfg.ringOrder, serviceBound) { setOrderSlot(2, it) }
         }
 
-        SmallTitle(text = "状态栏")
+        SmallTitle(text = "状态栏图标")
         Card(modifier = Modifier.fillMaxWidth()) {
             SwitchPreference(
                 checked = cfg.hideIcons,
@@ -511,7 +507,7 @@ private fun HomePage(
             )
         }
 
-        SmallTitle(text = "外观")
+        SmallTitle(text = "定位与分割线")
         Card(modifier = Modifier.fillMaxWidth()) {
             SliderRow(
                 label = "挖孔半径微调",
@@ -557,11 +553,7 @@ private fun HomePage(
                     it.putFloat(AnyCyCleConfig.KEY_OFFSET_Y_DP, v)
                 }
             }
-            Spacer(modifier = Modifier.height(6.dp))
-        }
-
-        SmallTitle(text = "环间分割线")
-        Card(modifier = Modifier.fillMaxWidth()) {
+            Spacer(modifier = Modifier.height(10.dp))
             SwitchPreference(
                 checked = cfg.dividerWidthDp > 0f,
                 onCheckedChange = { v ->
@@ -570,7 +562,7 @@ private fun HomePage(
                         it.putFloat(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, newWidth)
                     }
                 },
-                title = "启用分割线",
+                title = "环间分割线",
                 summary = "在相邻两环之间画一圈细线，区分紧贴的环",
                 enabled = serviceBound,
             )
@@ -686,6 +678,37 @@ private fun RingPage(
     ) {
         SmallTitle(text = "外观")
         Card(modifier = Modifier.fillMaxWidth()) {
+            ShapeRow(ring = ring, enabled = controlsEnabled, onUpdate = onUpdate)
+            if (ring.shape != AnyCyCleConfig.SHAPE_FULL) {
+                SliderRow(
+                    label = "自由旋转",
+                    value = ring.rotationDeg,
+                    range = AnyCyCleConfig.ROTATION_MIN_DEG..AnyCyCleConfig.ROTATION_MAX_DEG,
+                    decimals = 0,
+                    unit = "°",
+                    enabled = controlsEnabled,
+                ) { v ->
+                    onUpdate(ring.copy(rotationDeg = v))
+                }
+                SliderRow(
+                    label = "缺口宽度",
+                    value = ring.gapDeg,
+                    range = AnyCyCleConfig.GAP_MIN_DEG..AnyCyCleConfig.GAP_MAX_DEG,
+                    decimals = 0,
+                    unit = "°",
+                    enabled = controlsEnabled,
+                ) { v ->
+                    onUpdate(ring.copy(gapDeg = v))
+                }
+                Text(
+                    "轨道与进度弧限制在各段弧上；进度按档位比例跨段连续推进，满档时各段画满",
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 8.dp),
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
             SliderRow(
                 label = "线条粗细",
                 value = ring.strokeDp,
@@ -1120,6 +1143,91 @@ private fun ringLabel(id: String): String = when (id) {
     AnyCyCleConfig.RING_SIM1_ID -> "SIM 1"
     AnyCyCleConfig.RING_SIM2_ID -> "SIM 2"
     else -> id
+}
+
+/** 环形状选项：id + 显示名（与 AnyCyCleConfig 的 SHAPE_* 常量一一对应） */
+private val shapeOptions: List<Pair<String, String>> = listOf(
+    AnyCyCleConfig.SHAPE_FULL to "套环（完整圆）",
+    AnyCyCleConfig.SHAPE_HV to "上下半圆",
+    AnyCyCleConfig.SHAPE_HH to "左右半圆",
+    AnyCyCleConfig.SHAPE_D1 to "左上右下半圆",
+    AnyCyCleConfig.SHAPE_D2 to "右上左下半圆",
+    AnyCyCleConfig.SHAPE_STAR to "三叉星辉",
+    AnyCyCleConfig.SHAPE_STAR_I to "三叉星辉 · 倒置",
+)
+
+private fun shapeLabel(id: String): String =
+    shapeOptions.firstOrNull { it.first == id }?.second ?: "套环（完整圆）"
+
+/** 环形状选择行：与套环并存但不可重复（同一环二选一），选中后可再用旋转与缺口微调 */
+@Composable
+private fun ShapeRow(
+    ring: AnyCyCleConfig.RingCfg,
+    enabled: Boolean,
+    onUpdate: (AnyCyCleConfig.RingCfg) -> Unit,
+) {
+    var showPicker by remember { mutableStateOf(false) }
+
+    ArrowPreference(
+        title = "环形状",
+        summary = shapeLabel(ring.shape),
+        enabled = enabled,
+        onClick = { showPicker = true },
+    )
+    if (showPicker) {
+        OverlayDialog(
+            show = true,
+            title = "选择环形状",
+            summary = "与套环互斥：同一环只能是一种形状，选中后可继续用自由旋转与缺口宽度微调",
+            onDismissRequest = { showPicker = false },
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                shapeOptions.forEach { (id, label) ->
+                    val selected = id == ring.shape
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showPicker = false
+                                onUpdate(ring.copy(shape = id))
+                            }
+                            .padding(horizontal = 4.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clip(CircleShape)
+                                .background(if (selected) MiuixTheme.colorScheme.primary else Color.Transparent)
+                                .border(
+                                    width = if (selected) 0.dp else 1.5.dp,
+                                    color = MiuixTheme.colorScheme.dividerLine,
+                                    shape = CircleShape,
+                                ),
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            label,
+                            fontSize = 16.sp,
+                            color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    TextButton(
+                        text = "取消",
+                        onClick = { showPicker = false },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
