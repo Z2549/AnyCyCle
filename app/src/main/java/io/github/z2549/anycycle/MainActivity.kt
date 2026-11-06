@@ -24,6 +24,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -65,6 +66,16 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -430,7 +441,7 @@ private fun HomePage(
 
         SmallTitle(text = "基础")
         Card(modifier = Modifier.fillMaxWidth()) {
-            SwitchPreference(
+            A11ySwitch(
                 checked = cfg.enabled,
                 onCheckedChange = { v ->
                     commitWith({ c -> c.copy(enabled = v) }) {
@@ -440,7 +451,7 @@ private fun HomePage(
                 title = "启用 AnyCyCle",
                 enabled = serviceBound,
             )
-            SwitchPreference(
+            A11ySwitch(
                 checked = (cfg.displayMask and AnyCyCleConfig.BIT_WIFI) != 0,
                 onCheckedChange = { v ->
                     val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_WIFI
@@ -452,7 +463,7 @@ private fun HomePage(
                 title = "显示 WiFi 环（默认）",
                 enabled = serviceBound,
             )
-            SwitchPreference(
+            A11ySwitch(
                 checked = (cfg.displayMask and AnyCyCleConfig.BIT_SIM1) != 0,
                 onCheckedChange = { v ->
                     val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_SIM1
@@ -464,7 +475,7 @@ private fun HomePage(
                 title = "显示 SIM 卡 1 环",
                 enabled = serviceBound,
             )
-            SwitchPreference(
+            A11ySwitch(
                 checked = (cfg.displayMask and AnyCyCleConfig.BIT_SIM2) != 0,
                 onCheckedChange = { v ->
                     val newMask = if (v) cfg.displayMask or AnyCyCleConfig.BIT_SIM2
@@ -477,7 +488,7 @@ private fun HomePage(
                 enabled = serviceBound,
             )
             Text(
-                "各环紧贴摄像头挖孔、由内向外嵌套；每环的形状、颜色等详细设置在底部导航的 WiFi / SIM 1 / SIM 2 页",
+                "各环紧贴摄像头挖孔、由内向外嵌套；每环的颜色、粗细等详细设置在底部导航的 WiFi / SIM 1 / SIM 2 页",
                 fontSize = 12.sp,
                 lineHeight = 17.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -485,8 +496,50 @@ private fun HomePage(
             )
         }
 
-        SmallTitle(text = "嵌套顺序（内 → 外）")
+        SmallTitle(text = "环布局与顺序")
         Card(modifier = Modifier.fillMaxWidth()) {
+            LayoutRow(cfg = cfg, enabled = serviceBound, commitWith = commitWith)
+            val isTri = cfg.layoutMode == AnyCyCleConfig.LAYOUT_TRI ||
+                cfg.layoutMode == AnyCyCleConfig.LAYOUT_TRI_I
+            if (cfg.layoutMode != AnyCyCleConfig.LAYOUT_NESTED) {
+                SliderRow(
+                    label = "布局旋转",
+                    value = cfg.layoutRotationDeg,
+                    range = AnyCyCleConfig.ROTATION_MIN_DEG..AnyCyCleConfig.ROTATION_MAX_DEG,
+                    decimals = 0,
+                    unit = "°",
+                    enabled = serviceBound,
+                ) { v ->
+                    commitWith({ c -> c.copy(layoutRotationDeg = v) }) {
+                        it.putFloat(AnyCyCleConfig.KEY_LAYOUT_ROTATION_DEG, v)
+                    }
+                }
+                SliderRow(
+                    label = "缺口宽度",
+                    value = cfg.layoutGapDeg,
+                    range = AnyCyCleConfig.GAP_MIN_DEG..AnyCyCleConfig.GAP_MAX_DEG,
+                    decimals = 0,
+                    unit = "°",
+                    enabled = serviceBound,
+                ) { v ->
+                    commitWith({ c -> c.copy(layoutGapDeg = v) }) {
+                        it.putFloat(AnyCyCleConfig.KEY_LAYOUT_GAP_DEG, v)
+                    }
+                }
+                Text(
+                    if (isTri) {
+                        "三叉星辉：单环三段，依次为 WiFi、SIM 1、SIM 2（按嵌套顺序）；" +
+                            "每段独立显示对应信号的档位"
+                    } else {
+                        "半圆：两段依次为嵌套顺序中靠前的 SIM 与另一张 SIM；" +
+                            "WiFi 独立成环，按嵌套顺序套在组合环内侧或外侧"
+                    },
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 8.dp),
+                )
+            }
             OrderSlot("内环（最先贴孔）", 0, cfg.ringOrder, serviceBound) { setOrderSlot(0, it) }
             OrderSlot("中环", 1, cfg.ringOrder, serviceBound) { setOrderSlot(1, it) }
             OrderSlot("外环", 2, cfg.ringOrder, serviceBound) { setOrderSlot(2, it) }
@@ -494,7 +547,7 @@ private fun HomePage(
 
         SmallTitle(text = "状态栏图标")
         Card(modifier = Modifier.fillMaxWidth()) {
-            SwitchPreference(
+            A11ySwitch(
                 checked = cfg.hideIcons,
                 onCheckedChange = { v ->
                     commitWith({ c -> c.copy(hideIcons = v) }) {
@@ -554,7 +607,7 @@ private fun HomePage(
                 }
             }
             Spacer(modifier = Modifier.height(10.dp))
-            SwitchPreference(
+            A11ySwitch(
                 checked = cfg.dividerWidthDp > 0f,
                 onCheckedChange = { v ->
                     val newWidth = if (v) 1.5f else 0f
@@ -678,36 +731,6 @@ private fun RingPage(
     ) {
         SmallTitle(text = "外观")
         Card(modifier = Modifier.fillMaxWidth()) {
-            ShapeRow(ring = ring, enabled = controlsEnabled, onUpdate = onUpdate)
-            if (ring.shape != AnyCyCleConfig.SHAPE_FULL) {
-                SliderRow(
-                    label = "自由旋转",
-                    value = ring.rotationDeg,
-                    range = AnyCyCleConfig.ROTATION_MIN_DEG..AnyCyCleConfig.ROTATION_MAX_DEG,
-                    decimals = 0,
-                    unit = "°",
-                    enabled = controlsEnabled,
-                ) { v ->
-                    onUpdate(ring.copy(rotationDeg = v))
-                }
-                SliderRow(
-                    label = "缺口宽度",
-                    value = ring.gapDeg,
-                    range = AnyCyCleConfig.GAP_MIN_DEG..AnyCyCleConfig.GAP_MAX_DEG,
-                    decimals = 0,
-                    unit = "°",
-                    enabled = controlsEnabled,
-                ) { v ->
-                    onUpdate(ring.copy(gapDeg = v))
-                }
-                Text(
-                    "轨道与进度弧限制在各段弧上；进度按档位比例跨段连续推进，满档时各段画满",
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 8.dp),
-                )
-            }
             Spacer(modifier = Modifier.height(6.dp))
             SliderRow(
                 label = "线条粗细",
@@ -720,7 +743,7 @@ private fun RingPage(
                 onUpdate(ring.copy(strokeDp = v))
             }
             Spacer(modifier = Modifier.height(6.dp))
-            SwitchPreference(
+            A11ySwitch(
                 checked = ring.showTrack,
                 onCheckedChange = { v ->
                     onUpdate(ring.copy(showTrack = v))
@@ -782,6 +805,9 @@ private fun buildExportJson(cfg: AnyCyCleConfig.Cfg): String {
         .put(AnyCyCleConfig.KEY_HIDE_ICONS, cfg.hideIcons)
         .put(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, cfg.cutoutExtraDp.toDouble())
         .put(AnyCyCleConfig.KEY_RING_ORDER, cfg.ringOrder.joinToString(","))
+        .put(AnyCyCleConfig.KEY_LAYOUT_MODE, cfg.layoutMode)
+        .put(AnyCyCleConfig.KEY_LAYOUT_ROTATION_DEG, cfg.layoutRotationDeg.toDouble())
+        .put(AnyCyCleConfig.KEY_LAYOUT_GAP_DEG, cfg.layoutGapDeg.toDouble())
         .put(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, cfg.dividerWidthDp.toDouble())
         .put(AnyCyCleConfig.KEY_DIVIDER_COLOR, cfg.dividerColor)
         .put(AnyCyCleConfig.KEY_HIDE_LAUNCHER, cfg.hideLauncher)
@@ -816,6 +842,13 @@ private fun applyCfgKey(c: AnyCyCleConfig.Cfg, key: String, value: Any?): AnyCyC
         AnyCyCleConfig.KEY_HIDE_LAUNCHER -> c.copy(hideLauncher = value as Boolean)
         AnyCyCleConfig.KEY_RING_ORDER ->
             c.copy(ringOrder = AnyCyCleConfig.normalizeRingOrder(value as? String))
+        AnyCyCleConfig.KEY_LAYOUT_MODE ->
+            c.copy(
+                layoutMode = (value as? String)?.takeIf { it in AnyCyCleConfig.ALL_LAYOUTS }
+                    ?: c.layoutMode
+            )
+        AnyCyCleConfig.KEY_LAYOUT_ROTATION_DEG -> c.copy(layoutRotationDeg = value as Float)
+        AnyCyCleConfig.KEY_LAYOUT_GAP_DEG -> c.copy(layoutGapDeg = value as Float)
         AnyCyCleConfig.KEY_RING_WIFI ->
             c.copy(wifi = AnyCyCleConfig.ringFromJson(value as? String, c.wifi))
         AnyCyCleConfig.KEY_RING_SIM1 ->
@@ -837,6 +870,9 @@ private fun importJson(text: String): Map<String, Any> {
         out[AnyCyCleConfig.KEY_HIDE_ICONS] = settings.optBoolean(AnyCyCleConfig.KEY_HIDE_ICONS, AnyCyCleConfig.DEFAULT_HIDE_ICONS)
         out[AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP] = settings.optDouble(AnyCyCleConfig.KEY_CUTOUT_EXTRA_DP, 0.0).toFloat()
         out[AnyCyCleConfig.KEY_RING_ORDER] = settings.optString(AnyCyCleConfig.KEY_RING_ORDER, AnyCyCleConfig.DEFAULT_RING_ORDER)
+        out[AnyCyCleConfig.KEY_LAYOUT_MODE] = settings.optString(AnyCyCleConfig.KEY_LAYOUT_MODE, AnyCyCleConfig.DEFAULT_LAYOUT)
+        out[AnyCyCleConfig.KEY_LAYOUT_ROTATION_DEG] = settings.optDouble(AnyCyCleConfig.KEY_LAYOUT_ROTATION_DEG, 0.0).toFloat()
+        out[AnyCyCleConfig.KEY_LAYOUT_GAP_DEG] = settings.optDouble(AnyCyCleConfig.KEY_LAYOUT_GAP_DEG, 8.0).toFloat()
         out[AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP] = settings.optDouble(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, 0.0).toFloat()
         out[AnyCyCleConfig.KEY_DIVIDER_COLOR] = settings.optInt(AnyCyCleConfig.KEY_DIVIDER_COLOR, AnyCyCleConfig.DEFAULT_DIVIDER_COLOR)
         out[AnyCyCleConfig.KEY_HIDE_LAUNCHER] = settings.optBoolean(AnyCyCleConfig.KEY_HIDE_LAUNCHER, false)
@@ -869,6 +905,9 @@ private fun resetDefaults(e: SharedPreferences.Editor) {
     e.putFloat(AnyCyCleConfig.KEY_DIVIDER_WIDTH_DP, AnyCyCleConfig.DEFAULT_DIVIDER_WIDTH_DP)
     e.putInt(AnyCyCleConfig.KEY_DIVIDER_COLOR, AnyCyCleConfig.DEFAULT_DIVIDER_COLOR)
     e.putString(AnyCyCleConfig.KEY_RING_ORDER, AnyCyCleConfig.DEFAULT_RING_ORDER)
+    e.putString(AnyCyCleConfig.KEY_LAYOUT_MODE, AnyCyCleConfig.DEFAULT_LAYOUT)
+    e.putFloat(AnyCyCleConfig.KEY_LAYOUT_ROTATION_DEG, AnyCyCleConfig.DEFAULT_ROTATION_DEG)
+    e.putFloat(AnyCyCleConfig.KEY_LAYOUT_GAP_DEG, AnyCyCleConfig.DEFAULT_GAP_DEG)
     e.putBoolean(AnyCyCleConfig.KEY_HIDE_LAUNCHER, false)
     AnyCyCleConfig.writeRingJson(e, AnyCyCleConfig.KEY_RING_WIFI, AnyCyCleConfig.defaultWifi())
     AnyCyCleConfig.writeRingJson(e, AnyCyCleConfig.KEY_RING_SIM1, AnyCyCleConfig.defaultSim1())
@@ -932,6 +971,120 @@ private fun migrateV11(p: SharedPreferences) {
 }
 
 // ------------------------------------------------------------------
+// 无障碍树适配
+// 自绘 / 组合行合并为单一语义节点（描述 + 角色 + 状态 + 点击），
+// uiautomator dump 与 TalkBack 均可按文字定位和操作，不再依赖像素坐标。
+// ------------------------------------------------------------------
+
+/** 整行合并为一个无障碍节点（mergeDescendants = true） */
+private fun Modifier.a11y(
+    label: String,
+    role: Role = Role.Button,
+    state: String? = null,
+    toggleState: Boolean? = null,
+    selectedState: Boolean? = null,
+    clickLabel: String = "点击",
+    onClickAction: (() -> Unit)? = null,
+): Modifier = this.semantics(mergeDescendants = true) {
+    contentDescription = label
+    this.role = role
+    if (state != null) stateDescription = state
+    if (toggleState != null) {
+        this.toggleableState = if (toggleState) ToggleableState.On else ToggleableState.Off
+    }
+    if (selectedState != null) this.selected = selectedState
+    if (onClickAction != null) {
+        onClick(label = clickLabel) {
+            onClickAction()
+            true
+        }
+    }
+}
+
+/** 开关行无障碍包装：miuix SwitchPreference 整行合并为可读可切换的语义节点 */
+@Composable
+private fun A11ySwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    title: String,
+    summary: String? = null,
+    enabled: Boolean = true,
+) {
+    // toggleable 提供触摸与基础状态；clearAndSetSemantics 生成单一叶子语义节点
+    // （desc + 开关状态 + ACTION_CLICK 同节点，dump / TalkBack 均可直接操作）
+    Box(
+        modifier = Modifier
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            )
+            .clearAndSetSemantics {
+                contentDescription = if (summary.isNullOrEmpty()) title else "$title，$summary"
+                role = Role.Switch
+                toggleableState = if (checked) ToggleableState.On else ToggleableState.Off
+                stateDescription = if (checked) "开启" else "关闭"
+                if (enabled) {
+                    onClick(label = "切换") {
+                        onCheckedChange(!checked)
+                        true
+                    }
+                }
+            },
+    ) {
+        if (summary.isNullOrEmpty()) {
+            SwitchPreference(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                title = title,
+                enabled = enabled,
+            )
+        } else {
+            SwitchPreference(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                title = title,
+                summary = summary,
+                enabled = enabled,
+            )
+        }
+    }
+}
+
+/** 箭头行无障碍包装：标题 + 摘要合并为可点击节点 */
+@Composable
+private fun A11yArrow(
+    title: String,
+    summary: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    // clickable 提供触摸；clearAndSetSemantics 生成单一叶子语义节点（desc + ACTION_CLICK 同节点）
+    Box(
+        modifier = Modifier
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = "$title，$summary"
+                role = Role.Button
+                if (enabled) {
+                    onClick(label = "打开") {
+                        onClick()
+                        true
+                    }
+                }
+            },
+    ) {
+        ArrowPreference(
+            title = title,
+            summary = summary,
+            enabled = enabled,
+            onClick = onClick,
+        )
+    }
+}
+
+// ------------------------------------------------------------------
 // 通用组件（miuix 风格）
 // ------------------------------------------------------------------
 
@@ -961,7 +1114,13 @@ private fun SliderRow(
     }
 
     Column(
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        modifier = Modifier
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            // 无障碍：整行合并为可读节点（含当前值），dump / 读屏可按标签定位滑条
+            .semantics(mergeDescendants = true) {
+                contentDescription = label
+                stateDescription = "${formatNum(local, decimals)}$unit"
+            },
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1025,6 +1184,11 @@ private fun ColorPickRow(label: String, current: Int, enabled: Boolean = true, o
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled) { showPicker = true }
+            // 无障碍：整行合并为可点节点，描述含当前颜色 Hex
+            .semantics(mergeDescendants = true) {
+                contentDescription = "$label #%06X".format(current and 0xFFFFFF)
+                role = Role.Button
+            }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1076,7 +1240,7 @@ private fun OrderSlot(
     )
     val current = order.getOrNull(slot) ?: all[slot]
 
-    ArrowPreference(
+    A11yArrow(
         title = label,
         summary = ringLabel(current),
         enabled = enabled,
@@ -1092,12 +1256,23 @@ private fun OrderSlot(
             Column(modifier = Modifier.fillMaxWidth()) {
                 all.forEach { opt ->
                     val selected = opt == current
+                    val pick: () -> Unit = {
+                        showPicker = false
+                        onPick(opt)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                showPicker = false
-                                onPick(opt)
+                            .clickable(onClick = pick)
+                            // 无障碍：单一叶子节点（描述 + 单选态 + ACTION_CLICK）
+                            .clearAndSetSemantics {
+                                contentDescription = ringLabel(opt)
+                                role = Role.RadioButton
+                                this.selected = selected
+                                onClick(label = "选择") {
+                                    pick()
+                                    true
+                                }
                             }
                             .padding(horizontal = 4.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1145,51 +1320,69 @@ private fun ringLabel(id: String): String = when (id) {
     else -> id
 }
 
-/** 环形状选项：id + 显示名（与 AnyCyCleConfig 的 SHAPE_* 常量一一对应） */
-private val shapeOptions: List<Pair<String, String>> = listOf(
-    AnyCyCleConfig.SHAPE_FULL to "套环（完整圆）",
-    AnyCyCleConfig.SHAPE_HV to "上下半圆",
-    AnyCyCleConfig.SHAPE_HH to "左右半圆",
-    AnyCyCleConfig.SHAPE_D1 to "左上右下半圆",
-    AnyCyCleConfig.SHAPE_D2 to "右上左下半圆",
-    AnyCyCleConfig.SHAPE_STAR to "三叉星辉",
-    AnyCyCleConfig.SHAPE_STAR_I to "三叉星辉 · 倒置",
+/** 环布局选项：id + 显示名（与 AnyCyCleConfig 的 LAYOUT_* 常量一一对应） */
+private val layoutOptions: List<Pair<String, String>> = listOf(
+    AnyCyCleConfig.LAYOUT_NESTED to "套环（三环嵌套）",
+    AnyCyCleConfig.LAYOUT_HALF_V to "上下半圆 · 双卡组合",
+    AnyCyCleConfig.LAYOUT_HALF_H to "左右半圆 · 双卡组合",
+    AnyCyCleConfig.LAYOUT_HALF_D1 to "左上右下半圆 · 双卡组合",
+    AnyCyCleConfig.LAYOUT_HALF_D2 to "右上左下半圆 · 双卡组合",
+    AnyCyCleConfig.LAYOUT_TRI to "三叉星辉 · 三源同环",
+    AnyCyCleConfig.LAYOUT_TRI_I to "三叉星辉 · 倒置",
 )
 
-private fun shapeLabel(id: String): String =
-    shapeOptions.firstOrNull { it.first == id }?.second ?: "套环（完整圆）"
+private fun layoutLabel(id: String): String =
+    layoutOptions.firstOrNull { it.first == id }?.second ?: "套环（三环嵌套）"
 
-/** 环形状选择行：与套环并存但不可重复（同一环二选一），选中后可再用旋转与缺口微调 */
+/**
+ * 环布局选择行（全局布局，多源共环）：
+ *  - 套环 = 每个信号源独占一层完整圆（旧版行为）；
+ *  - 半圆 = 两张 SIM 分占两段 180°，WiFi 独立成环（内外由嵌套顺序决定）；
+ *  - 三叉星辉 = WiFi/SIM1/SIM2 三源同环（三段 120°）。
+ */
 @Composable
-private fun ShapeRow(
-    ring: AnyCyCleConfig.RingCfg,
+private fun LayoutRow(
+    cfg: AnyCyCleConfig.Cfg,
     enabled: Boolean,
-    onUpdate: (AnyCyCleConfig.RingCfg) -> Unit,
+    commitWith: ((AnyCyCleConfig.Cfg) -> AnyCyCleConfig.Cfg, (SharedPreferences.Editor) -> Unit) -> Unit,
 ) {
     var showPicker by remember { mutableStateOf(false) }
 
-    ArrowPreference(
-        title = "环形状",
-        summary = shapeLabel(ring.shape),
+    A11yArrow(
+        title = "环布局",
+        summary = layoutLabel(cfg.layoutMode),
         enabled = enabled,
         onClick = { showPicker = true },
     )
     if (showPicker) {
         OverlayDialog(
             show = true,
-            title = "选择环形状",
-            summary = "与套环互斥：同一环只能是一种形状，选中后可继续用自由旋转与缺口宽度微调",
+            title = "选择环布局",
+            summary = "半圆 = 两张 SIM 分占两段、WiFi 独立成环（内外按嵌套顺序）；三叉星辉 = WiFi/SIM 1/SIM 2 三源同环",
             onDismissRequest = { showPicker = false },
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                shapeOptions.forEach { (id, label) ->
-                    val selected = id == ring.shape
+                layoutOptions.forEach { (id, label) ->
+                    val selected = id == cfg.layoutMode
+                    val pick: () -> Unit = {
+                        showPicker = false
+                        commitWith({ c -> c.copy(layoutMode = id) }) { e ->
+                            e.putString(AnyCyCleConfig.KEY_LAYOUT_MODE, id)
+                        }
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                showPicker = false
-                                onUpdate(ring.copy(shape = id))
+                            .clickable(onClick = pick)
+                            // 无障碍：单一叶子节点（描述 + 单选态 + ACTION_CLICK）
+                            .clearAndSetSemantics {
+                                contentDescription = label
+                                role = Role.RadioButton
+                                this.selected = selected
+                                onClick(label = "选择") {
+                                    pick()
+                                    true
+                                }
                             }
                             .padding(horizontal = 4.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1266,11 +1459,27 @@ private fun RuleRow(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(
-                checked = rule.enabled,
-                enabled = controlsEnabled,
-                onCheckedChange = { v -> onUpdate(rule.copy(enabled = v)) },
-            )
+            Box(
+                modifier = Modifier
+                    .toggleable(
+                        value = rule.enabled,
+                        enabled = controlsEnabled,
+                        role = Role.Switch,
+                        onValueChange = { v -> onUpdate(rule.copy(enabled = v)) },
+                    )
+                    .clearAndSetSemantics {
+                        contentDescription = "规则 ${index + 1} 启用"
+                        role = Role.Switch
+                        toggleableState = if (rule.enabled) ToggleableState.On else ToggleableState.Off
+                        stateDescription = if (rule.enabled) "开启" else "关闭"
+                    },
+            ) {
+                Switch(
+                    checked = rule.enabled,
+                    enabled = controlsEnabled,
+                    onCheckedChange = { v -> onUpdate(rule.copy(enabled = v)) },
+                )
+            }
             Spacer(modifier = Modifier.width(10.dp))
             Text("规则 ${index + 1}", fontSize = 15.sp, modifier = Modifier.weight(1f))
             Row(
@@ -1288,7 +1497,9 @@ private fun RuleRow(
                             levelText = input
                         }
                     },
-                    modifier = Modifier.width(44.dp),
+                    modifier = Modifier
+                        .width(44.dp)
+                        .semantics { contentDescription = "规则 ${index + 1} 档位上限" },
                     singleLine = true,
                     enabled = controlsEnabled,
                     textStyle = TextStyle(
@@ -1312,7 +1523,7 @@ private fun RuleRow(
             }
         }
         ColorPickRow(
-            label = "颜色",
+            label = "规则 ${index + 1} 颜色",
             current = rule.color,
             enabled = controlsEnabled,
         ) { c ->
@@ -1385,7 +1596,13 @@ private fun ColorPickerDialog(
                                     },
                                     shape = CircleShape,
                                 )
-                                .clickable { argb = c },
+                                .clickable { argb = c }
+                                // 无障碍：每个预设色块一个可读可选节点
+                                .semantics {
+                                    contentDescription = "#%06X".format(c and 0xFFFFFF)
+                                    role = Role.RadioButton
+                                    selected = c == argb
+                                },
                         )
                     }
                 }
@@ -1404,7 +1621,8 @@ private fun ColorPickerDialog(
                             if (change.positionChange() != Offset.Zero) change.consume()
                             updateSv(change.position.x, change.position.y, size.width.toFloat(), size.height.toFloat())
                         }
-                    },
+                    }
+                    .semantics { contentDescription = "饱和度与明度面板" },
             ) {
                 val w = size.width
                 val h = size.height
@@ -1432,6 +1650,10 @@ private fun ColorPickerDialog(
                     argb = Color.hsv(it, svX, 1f - svY).toArgb()
                 },
                 valueRange = 0f..360f,
+                modifier = Modifier.semantics {
+                    contentDescription = "色相"
+                    stateDescription = "${hue.toInt()}°"
+                },
             )
             // Hex 输入
             val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
@@ -1444,7 +1666,8 @@ private fun ColorPickerDialog(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(MiuixTheme.colorScheme.surfaceVariant)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .semantics { contentDescription = "Hex 颜色值" },
                 singleLine = true,
                 textStyle = TextStyle(fontSize = 14.sp, color = MiuixTheme.colorScheme.onSurface),
                 keyboardOptions = KeyboardOptions(
