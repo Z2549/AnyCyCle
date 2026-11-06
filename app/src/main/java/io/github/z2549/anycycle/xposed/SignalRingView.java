@@ -59,6 +59,15 @@ public class SignalRingView extends View {
     private static final int RING_SIM1 = 1;
     private static final int RING_SIM2 = 2;
 
+    // 布局模式（与 AnyCyCleConfig.LAYOUT_* 一一对应）
+    private static final int LAYOUT_NESTED = 0;
+    private static final int LAYOUT_HALF_V = 1;
+    private static final int LAYOUT_HALF_H = 2;
+    private static final int LAYOUT_HALF_D1 = 3;
+    private static final int LAYOUT_HALF_D2 = 4;
+    private static final int LAYOUT_TRI = 5;
+    private static final int LAYOUT_TRI_I = 6;
+
     /** 最内环内缘与摄像头挖孔边缘的间隙（dp）：紧贴但不压住相机装饰环 */
     private static final float EDGE_GAP_DP = 1.0f;
 
@@ -97,6 +106,26 @@ public class SignalRingView extends View {
         }
     }
 
+    /**
+     * 绘制层计划：布局引擎把信号源分配到"层/段"上。
+     * 一层 = 从挖孔边缘向外堆叠的一个半径位置；层内按段序画 1~3 段弧，
+     * 每段绑定一个信号源（半圆组合环 = 2 段、三叉 = 3 段、套环 = 每层 1 段整圆）。
+     */
+    private static final class LayerPlan {
+        /** 每段对应的源 id（RING_*），按段序 */
+        final int[] ringIds;
+        /** 每段弧中心角（12 点起顺时针，含布局旋转；整圆时长度 1、值 0） */
+        final float[] centers;
+        /** 段弧长（度）；整圆 = 360 */
+        final float spanDeg;
+
+        LayerPlan(int[] ringIds, float[] centers, float spanDeg) {
+            this.ringIds = ringIds;
+            this.centers = centers;
+            this.spanDeg = spanDeg;
+        }
+    }
+
     // ------------------------------------------------------------------
     // 配置（volatile，由 MainHook 线程推送，onDraw/UI 线程读取）
     // ------------------------------------------------------------------
@@ -109,6 +138,10 @@ public class SignalRingView extends View {
     private volatile int dividerColor = 0xFF000000;
     /** 嵌套顺序（内 → 外），元素为 RING_*，必须是三者的完整排列 */
     private volatile int[] ringOrder = new int[]{RING_WIFI, RING_SIM1, RING_SIM2};
+    /** 环布局（LAYOUT_* 常量）与布局级旋转/缺口宽度（半圆、三叉布局用） */
+    private volatile int layoutMode = LAYOUT_NESTED;
+    private volatile float layoutRotDeg = 0f;
+    private volatile float layoutGapDeg = 8f;
     private volatile RingConf wifiConf = new RingConf(2.5f, 0xFFFFFFFF, true, new Rule[0]);
     private volatile RingConf sim1Conf = new RingConf(2.5f, 0xFF2196F3, true, new Rule[0]);
     private volatile RingConf sim2Conf = new RingConf(2.5f, 0xFFAB47BC, true, new Rule[0]);
@@ -224,6 +257,9 @@ public class SignalRingView extends View {
             dividerWidthDp = clamp((float) o.optDouble("divW", 0.0), 0f, 3f);
             dividerColor = o.optInt("divColor", 0xFF000000);
             ringOrder = parseOrder(o.optJSONArray("order"));
+            layoutMode = parseLayout(o.optString("layout", "nested"));
+            layoutRotDeg = clamp((float) o.optDouble("lrot", 0.0), 0f, 360f);
+            layoutGapDeg = clamp((float) o.optDouble("lgap", 8.0), 0f, 30f);
             wifiConf = parseRing(o.optJSONObject("wifi"), 0xFFFFFFFF);
             sim1Conf = parseRing(o.optJSONObject("sim1"), 0xFF2196F3);
             sim2Conf = parseRing(o.optJSONObject("sim2"), 0xFFAB47BC);
@@ -266,6 +302,22 @@ public class SignalRingView extends View {
             rules = list.toArray(new Rule[0]);
         }
         return new RingConf(stroke, baseColor, showTrack, rules);
+    }
+
+    /** 解析布局 id → LAYOUT_* 常量；非法值回退套环 */
+    private static int parseLayout(String s) {
+        if ("half_v".equals(s)) return LAYOUT_HALF_V;
+        if ("half_h".equals(s)) return LAYOUT_HALF_H;
+        if ("half_d1".equals(s)) return LAYOUT_HALF_D1;
+        if ("half_d2".equals(s)) return LAYOUT_HALF_D2;
+        if ("tri".equals(s)) return LAYOUT_TRI;
+        if ("tri_i".equals(s)) return LAYOUT_TRI_I;
+        return LAYOUT_NESTED;
+    }
+
+    private static float normDeg(float deg) {
+        float v = deg % 360f;
+        return v < 0f ? v + 360f : v;
     }
 
     /** 解析嵌套顺序（内 → 外）。必须是 {wifi,sim1,sim2} 的完整排列，非法时回退默认（WiFi 最内）。 */
@@ -562,35 +614,31 @@ public class SignalRingView extends View {
         float cy = c[1] + oy - loc[1];
 
         // 累进制布局（用户要求）：
-        //  - 最内环内缘贴着摄像头挖孔边缘（仅留 EDGE_GAP 微隙，视觉"紧贴"）；
-        //  - 后一环内缘贴着前一环外缘（RING_GAP=0，互相紧贴）；
+        //  - 最内层内缘贴着摄像头挖孔边缘（仅留 EDGE_GAP 微隙，视觉"紧贴"）；
+        //  - 后一层内缘贴着前一层外缘（RING_GAP=0，互相紧贴）；
         //  - 调整任意环粗细时圆心不动、该环向外扩展 —— 内缘位置不变，永不遮挡摄像头。
+        // 套环布局每层一个源；半圆/三叉布局由 planLayers 把多个源分配到同一层的
+        // 不同段上（多源共环），层间几何不变。
         float cursor = cutoutRadiusPx() + dp(EDGE_GAP_DP);
 
         int m = mask;
-        int[] order = ringOrder;
         float divW = dividerWidthDp * density;
         boolean drewAny = false;
-        for (int i = 0; i < order.length; i++) {
-            RingConf conf;
-            int level;
-            switch (order[i]) {
-                case RING_SIM1:
-                    conf = sim1Conf;
-                    level = (m & BIT_SIM1) != 0 ? sim1Level : -1;
-                    break;
-                case RING_SIM2:
-                    conf = sim2Conf;
-                    level = (m & BIT_SIM2) != 0 ? sim2Level : -1;
-                    break;
-                case RING_WIFI:
-                default:
-                    conf = wifiConf;
-                    level = (m & BIT_WIFI) != 0 ? wifiLevel : -1;
-                    break;
+        ArrayList<LayerPlan> layers = planLayers(enabledSources(m), ringOrder);
+        for (int li = 0; li < layers.size(); li++) {
+            LayerPlan lp = layers.get(li);
+            // 本层可见段（level >= 0）；全部无数据则整层跳过
+            int visible = 0;
+            float stroke = 0f;
+            for (int i = 0; i < lp.ringIds.length; i++) {
+                if (levelOf(lp.ringIds[i], m) < 0) continue;
+                RingConf conf = confOf(lp.ringIds[i]);
+                if (conf == null) continue;
+                visible++;
+                stroke = Math.max(stroke, Math.max(conf.strokeDp * density, 1f));
             }
-            if (conf == null || level < 0) continue;
-            // 环间分割线：在已画环与下一环之间画一圈纯色细环（占据 ringGap 位置）
+            if (visible == 0) continue;
+            // 层间分割线：在已画层与下一层之间画一圈纯色细环（占据 ringGap 位置）
             if (drewAny && divW > 0.5f) {
                 paint.setStrokeWidth(divW);
                 paint.setStyle(Paint.Style.STROKE);
@@ -601,16 +649,161 @@ public class SignalRingView extends View {
                 canvas.drawArc(ringRect, 0f, 360f, false, paint);
                 cursor += divW;
             }
-            float stroke = Math.max(conf.strokeDp * density, 1f);
             float radius = cursor + stroke / 2f;
-            drawOneRing(canvas, cx, cy, radius, stroke, conf, level);
+            for (int i = 0; i < lp.ringIds.length; i++) {
+                int level = levelOf(lp.ringIds[i], m);
+                RingConf conf = confOf(lp.ringIds[i]);
+                if (conf == null || level < 0) continue;
+                drawSeg(canvas, cx, cy, radius, stroke, conf, level, lp.centers[i], lp.spanDeg);
+            }
             cursor = radius + stroke / 2f + dp(RING_GAP_DP);
             drewAny = true;
         }
     }
 
-    private void drawOneRing(Canvas canvas, float cx, float cy, float radius, float stroke,
-                             RingConf conf, int level) {
+    // ------------------------------------------------------------------
+    // 布局引擎：把信号源分配到"层/段"（多源共环）
+    // ------------------------------------------------------------------
+
+    /**
+     * 生成层计划（第 0 层最内）：
+     *  - nested：每个启用源独占一层完整圆，层序 = 嵌套顺序；
+     *  - half_*：SIM1+SIM2 组合环（两段 180°，段 0 = 嵌套顺序中靠前的 SIM）
+     *            + WiFi 完整圆层（WiFi 在嵌套顺序中排在两张 SIM 之前 → 组合环内侧，否则外侧）；
+     *  - tri / tri_i：单层三段 120°，按嵌套顺序依次绑定 WiFi、SIM1、SIM2（三源同环）。
+     * 所有段中心角已叠加布局旋转（12 点起顺时针）。
+     */
+    private ArrayList<LayerPlan> planLayers(boolean[] en, int[] order) {
+        ArrayList<LayerPlan> out = new ArrayList<LayerPlan>();
+        float rot = layoutRotDeg;
+        float gap = clamp(layoutGapDeg, 0f, 30f);
+        int layout = layoutMode;
+
+        if (layout == LAYOUT_TRI || layout == LAYOUT_TRI_I) {
+            // 三叉星辉：tri 缺口朝三叉（一叉朝上）→ 段中心 60/180/300；
+            // tri_i = 整体旋转 180° → 段中心 120/240/0
+            float base = layout == LAYOUT_TRI ? 60f : 120f;
+            int[] ids = new int[3];
+            float[] centers = new float[3];
+            for (int i = 0; i < 3; i++) {
+                ids[i] = order[i];
+                centers[i] = normDeg(base + i * 120f + rot);
+            }
+            out.add(new LayerPlan(ids, centers, 120f - Math.min(gap, 118f)));
+            return out;
+        }
+
+        if (layout != LAYOUT_NESTED) {
+            // half_*：SIM 组合环两段 180°，段 0 = 嵌套顺序中靠前的 SIM
+            float c0, c1; // 段 0 / 段 1 的弧中心角（12 点起顺时针）
+            switch (layout) {
+                case LAYOUT_HALF_H:
+                    c0 = 270f; c1 = 90f; break;   // 左、右
+                case LAYOUT_HALF_D1:
+                    c0 = 315f; c1 = 135f; break;  // 左上、右下
+                case LAYOUT_HALF_D2:
+                    c0 = 45f; c1 = 225f; break;   // 右上、左下
+                case LAYOUT_HALF_V:
+                default:
+                    c0 = 0f; c1 = 180f; break;    // 上、下
+            }
+            int rank1 = orderIndex(order, RING_SIM1);
+            int rank2 = orderIndex(order, RING_SIM2);
+            int[] comboIds = rank1 < rank2
+                    ? new int[]{RING_SIM1, RING_SIM2}
+                    : new int[]{RING_SIM2, RING_SIM1};
+            float[] comboCenters = new float[]{normDeg(c0 + rot), normDeg(c1 + rot)};
+            LayerPlan combo = new LayerPlan(comboIds, comboCenters, 180f - Math.min(gap, 178f));
+            LayerPlan wifi = new LayerPlan(new int[]{RING_WIFI}, new float[]{normDeg(rot)}, 360f);
+
+            // WiFi 内外：WiFi 在嵌套顺序中的位次比启用 SIM 的最小位次更靠前 → 内侧
+            int rankW = orderIndex(order, RING_WIFI);
+            boolean wifiInner;
+            if (en[RING_SIM1] && en[RING_SIM2]) {
+                wifiInner = rankW < Math.min(rank1, rank2);
+            } else if (en[RING_SIM1]) {
+                wifiInner = rankW < rank1;
+            } else {
+                wifiInner = rankW < rank2;
+            }
+            boolean anySim = en[RING_SIM1] || en[RING_SIM2];
+            if (wifiInner) {
+                if (en[RING_WIFI]) out.add(wifi);
+                if (anySim) out.add(combo);
+            } else {
+                if (anySim) out.add(combo);
+                if (en[RING_WIFI]) out.add(wifi);
+            }
+            return out;
+        }
+
+        // nested：每个启用源独占一层完整圆
+        for (int i = 0; i < order.length; i++) {
+            if (!en[order[i]]) continue;
+            out.add(new LayerPlan(new int[]{order[i]}, new float[]{0f}, 360f));
+        }
+        return out;
+    }
+
+    /** 源 id 在嵌套顺序中的位次（order 恒为完整排列，必命中） */
+    private static int orderIndex(int[] order, int ringId) {
+        for (int i = 0; i < order.length; i++) {
+            if (order[i] == ringId) return i;
+        }
+        return 0;
+    }
+
+    /** 三源的启用状态（按显示位掩码）：[wifi, sim1, sim2] */
+    private boolean[] enabledSources(int m) {
+        return new boolean[]{
+                (m & BIT_WIFI) != 0,
+                (m & BIT_SIM1) != 0,
+                (m & BIT_SIM2) != 0,
+        };
+    }
+
+    private boolean enabledAt(int ringId, int m) {
+        switch (ringId) {
+            case RING_SIM1:
+                return (m & BIT_SIM1) != 0;
+            case RING_SIM2:
+                return (m & BIT_SIM2) != 0;
+            default:
+                return (m & BIT_WIFI) != 0;
+        }
+    }
+
+    private RingConf confOf(int ringId) {
+        switch (ringId) {
+            case RING_SIM1:
+                return sim1Conf;
+            case RING_SIM2:
+                return sim2Conf;
+            default:
+                return wifiConf;
+        }
+    }
+
+    /** 源的当前档位（mask 关 → -1；-1 = 不绘制该段） */
+    private int levelOf(int ringId, int m) {
+        switch (ringId) {
+            case RING_SIM1:
+                return (m & BIT_SIM1) != 0 ? sim1Level : -1;
+            case RING_SIM2:
+                return (m & BIT_SIM2) != 0 ? sim2Level : -1;
+            default:
+                return (m & BIT_WIFI) != 0 ? wifiLevel : -1;
+        }
+    }
+
+    /**
+     * 画一层的一段弧。
+     * spanDeg ≥ 359 视为整圆（轨道整圆 + 进度弧 12 点起顺时针 level×90°）；
+     * 分段模式：轨道 = 段弧（该源颜色 15% alpha），进度弧 = 档位比例 × 段弧，
+     * 从段起点（center - span/2）顺时针推进 —— 每段独立表达自己源的档位。
+     */
+    private void drawSeg(Canvas canvas, float cx, float cy, float radius, float stroke,
+                         RingConf conf, int level, float centerDeg, float spanDeg) {
         if (conf == null || level < 0) return;
         radius = Math.max(radius, stroke / 2f + 1f);
 
@@ -621,17 +814,32 @@ public class SignalRingView extends View {
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeCap(Paint.Cap.ROUND);
 
-        // 背景轨道：整圆，当前环色，alpha≈15%，同一粗细
-        if (conf.showTrack) {
-            int alpha = (int) (Color.alpha(color) * 0.15f) & 0xFF;
-            paint.setColor((color & 0x00FFFFFF) | (alpha << 24));
-            canvas.drawArc(ringRect, 0f, 360f, false, paint);
+        int clamped = Math.max(0, Math.min(level, 4));
+
+        // 整圆（套环）：原逻辑不变
+        if (spanDeg >= 359f) {
+            if (conf.showTrack) {
+                int alpha = (int) (Color.alpha(color) * 0.15f) & 0xFF;
+                paint.setColor((color & 0x00FFFFFF) | (alpha << 24));
+                canvas.drawArc(ringRect, 0f, 360f, false, paint);
+            }
+            paint.setColor(color);
+            // 进度弧：从 12 点方向顺时针，档位 0-4 → 0-360 度
+            canvas.drawArc(ringRect, -90f, clamped * 90f, false, paint);
+            return;
         }
 
-        // 进度弧：从 12 点方向顺时针，档位 0-4 → 0-360 度
-        int clamped = Math.max(0, Math.min(level, 4));
-        paint.setColor(color);
-        canvas.drawArc(ringRect, -90f, clamped * 90f, false, paint);
+        // 分段：Android drawArc 0° = 3 点钟方向、顺时针为正 → 12 点 = -90°
+        float start = centerDeg - spanDeg / 2f;
+        if (conf.showTrack && spanDeg > 0.5f) {
+            int alpha = (int) (Color.alpha(color) * 0.15f) & 0xFF;
+            paint.setColor((color & 0x00FFFFFF) | (alpha << 24));
+            canvas.drawArc(ringRect, start - 90f, spanDeg, false, paint);
+        }
+        if (clamped > 0 && spanDeg > 0.5f) {
+            paint.setColor(color);
+            canvas.drawArc(ringRect, start - 90f, spanDeg * clamped / 4f, false, paint);
+        }
     }
 
     /** 取第一条 en 且 level <= max 的规则颜色，无匹配用 baseColor（rules 按 max 升序） */
@@ -752,37 +960,33 @@ public class SignalRingView extends View {
         return Math.max(r, dp(4f));
     }
 
-    /** 取启用（mask 内）环的配置；未启用的环返回 null（不会被绘制，也不占位） */
-    private RingConf confIfMasked(int ringId, int m) {
-        switch (ringId) {
-            case RING_SIM1:
-                return (m & BIT_SIM1) != 0 ? sim1Conf : null;
-            case RING_SIM2:
-                return (m & BIT_SIM2) != 0 ? sim2Conf : null;
-            case RING_WIFI:
-            default:
-                return (m & BIT_WIFI) != 0 ? wifiConf : null;
-        }
-    }
-
     /**
-     * 覆盖当前配置全部启用环所需的外接半径（px，含 6dp 余量）。
-     * 上界口径：假设所有启用环的档位均有效——档位出现/消失时窗口尺寸保持稳定不抖动
-     * （drawRings 里 level&lt;0 的环虽然跳过，但占用位置的上界与此一致）。
+     * 覆盖当前配置全部启用源所需的外接半径（px，含 6dp 余量）。
+     * 上界口径：假设所有启用源的档位均有效——档位出现/消失时窗口尺寸保持稳定不抖动
+     * （drawRings 里 level&lt;0 的段虽然跳过，但占用位置的上界与此一致）。
+     * 层数与层内最大粗细均由 planLayers 决定（套环 3 层 / 半圆 2 层 / 三叉 1 层）。
      * MainHook 据此把悬浮窗从全屏收缩为挖孔附近的局部窗口。
      */
     public float requiredRadiusPx() {
         float density = getResources().getDisplayMetrics().density;
         float cursor = cutoutRadiusPx() + dp(EDGE_GAP_DP);
         int m = mask;
-        int[] order = ringOrder;
+        ArrayList<LayerPlan> layers = planLayers(enabledSources(m), ringOrder);
         float divW = dividerWidthDp * density;
         boolean drewAny = false;
-        for (int i = 0; i < order.length; i++) {
-            RingConf conf = confIfMasked(order[i], m);
-            if (conf == null) continue;
+        for (int li = 0; li < layers.size(); li++) {
+            LayerPlan lp = layers.get(li);
+            // 上界口径：mask 启用即计入（不看 level）——档位出现/消失时窗口尺寸稳定
+            float stroke = 0f;
+            for (int i = 0; i < lp.ringIds.length; i++) {
+                if (!enabledAt(lp.ringIds[i], m)) continue;
+                RingConf conf = confOf(lp.ringIds[i]);
+                if (conf == null) continue;
+                stroke = Math.max(stroke, Math.max(conf.strokeDp * density, 1f));
+            }
+            if (stroke <= 0f) continue;
             if (drewAny && divW > 0.5f) cursor += divW;
-            cursor += Math.max(conf.strokeDp * density, 1f);
+            cursor += stroke;
             drewAny = true;
         }
         return cursor + dp(6f);

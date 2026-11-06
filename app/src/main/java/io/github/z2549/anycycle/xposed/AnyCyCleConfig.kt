@@ -92,6 +92,62 @@ object AnyCyCleConfig {
     const val STROKE_MAX_DP = 8f
 
     // ------------------------------------------------------------------
+    // 环布局（全局，两端一致；SignalRingView 按布局把信号源分配到"层/段"上）
+    //
+    // 多源共环语义（张总定义）：
+    //  - nested 套环：每个信号源独占一层完整圆（经典嵌套，默认）。
+    //  - half_* 半圆：一个"组合环"分两段 180°，上半/左上/右上段 = 嵌套顺序中
+    //    靠前的 SIM，另一段 = 另一张 SIM；WiFi 按嵌套顺序独立成完整圆环，
+    //    套在组合环内侧或外侧 —— 最终两个环，其中一环是两张 SIM 的信号。
+    //  - tri / tri_i 三叉星辉：单环分三段 120°，按嵌套顺序依次绑定
+    //    WiFi、SIM1、SIM2 —— 三源同环，无嵌套。
+    // ------------------------------------------------------------------
+
+    /** 套环：三环嵌套（默认，与旧版行为一致） */
+    const val LAYOUT_NESTED = "nested"
+
+    /** 上下半圆：组合环上段+下段，缺口在左（9 点）右（3 点）方向 */
+    const val LAYOUT_HALF_V = "half_v"
+
+    /** 左右半圆：组合环左段+右段，缺口在上（12 点）下（6 点）方向 */
+    const val LAYOUT_HALF_H = "half_h"
+
+    /** 左上右下半圆：组合环左上段+右下段，缺口沿右上-左下对角线 */
+    const val LAYOUT_HALF_D1 = "half_d1"
+
+    /** 右上左下半圆：组合环右上段+左下段，缺口沿左上-右下对角线 */
+    const val LAYOUT_HALF_D2 = "half_d2"
+
+    /** 三叉星辉：三段 120° 排布如三叉星辉外圆（缺口朝三个叉，一个朝上） */
+    const val LAYOUT_TRI = "tri"
+
+    /** 三叉星辉倒置：上式整体旋转 180°（一个叉朝下） */
+    const val LAYOUT_TRI_I = "tri_i"
+
+    /** 全部合法布局 id（App 端选择列表 / Hook 端解析兜底用） */
+    val ALL_LAYOUTS = listOf(
+        LAYOUT_NESTED, LAYOUT_HALF_V, LAYOUT_HALF_H, LAYOUT_HALF_D1,
+        LAYOUT_HALF_D2, LAYOUT_TRI, LAYOUT_TRI_I,
+    )
+
+    const val DEFAULT_LAYOUT = LAYOUT_NESTED
+
+    /** RemotePreferences 键：环布局 / 布局旋转 / 缺口宽度 */
+    const val KEY_LAYOUT_MODE = "layout_mode"
+    const val KEY_LAYOUT_ROTATION_DEG = "layout_rotation_deg"
+    const val KEY_LAYOUT_GAP_DEG = "layout_gap_deg"
+
+    /** 布局自由旋转（度，12 点起顺时针，叠加在预设之上；0-360） */
+    const val DEFAULT_ROTATION_DEG = 0f
+    const val ROTATION_MIN_DEG = 0f
+    const val ROTATION_MAX_DEG = 360f
+
+    /** 缺口宽度（度）：半圆/三叉布局相邻两段之间的空隙；0 = 首尾相接 */
+    const val DEFAULT_GAP_DEG = 8f
+    const val GAP_MIN_DEG = 0f
+    const val GAP_MAX_DEG = 30f
+
+    // ------------------------------------------------------------------
     // 每环配置模型
     // ------------------------------------------------------------------
 
@@ -230,6 +286,9 @@ object AnyCyCleConfig {
         val hideIcons: Boolean = DEFAULT_HIDE_ICONS,
         val cutoutExtraDp: Float = DEFAULT_CUTOUT_EXTRA_DP,
         val ringOrder: List<String> = normalizeRingOrder(DEFAULT_RING_ORDER),
+        val layoutMode: String = DEFAULT_LAYOUT,
+        val layoutRotationDeg: Float = DEFAULT_ROTATION_DEG,
+        val layoutGapDeg: Float = DEFAULT_GAP_DEG,
         val dividerWidthDp: Float = DEFAULT_DIVIDER_WIDTH_DP,
         val dividerColor: Int = DEFAULT_DIVIDER_COLOR,
         val hideLauncher: Boolean = DEFAULT_HIDE_LAUNCHER,
@@ -248,6 +307,10 @@ object AnyCyCleConfig {
         hideIcons = prefs.getBoolean(KEY_HIDE_ICONS, DEFAULT_HIDE_ICONS),
         cutoutExtraDp = prefs.getFloat(KEY_CUTOUT_EXTRA_DP, DEFAULT_CUTOUT_EXTRA_DP),
         ringOrder = normalizeRingOrder(prefs.getString(KEY_RING_ORDER, null)),
+        layoutMode = prefs.getString(KEY_LAYOUT_MODE, null)?.takeIf { it in ALL_LAYOUTS }
+            ?: DEFAULT_LAYOUT,
+        layoutRotationDeg = prefs.getFloat(KEY_LAYOUT_ROTATION_DEG, DEFAULT_ROTATION_DEG),
+        layoutGapDeg = prefs.getFloat(KEY_LAYOUT_GAP_DEG, DEFAULT_GAP_DEG),
         dividerWidthDp = prefs.getFloat(KEY_DIVIDER_WIDTH_DP, DEFAULT_DIVIDER_WIDTH_DP),
         dividerColor = prefs.getInt(KEY_DIVIDER_COLOR, DEFAULT_DIVIDER_COLOR),
         hideLauncher = prefs.getBoolean(KEY_HIDE_LAUNCHER, DEFAULT_HIDE_LAUNCHER),

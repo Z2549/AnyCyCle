@@ -435,8 +435,8 @@ class MainHook : XposedModule() {
 
     /**
      * 估算环外接半径 px（首帧建窗用，口径与 SignalRingView.requiredRadiusPx 一致：
-     * cutout 半径 + EDGE_GAP + 各启用环粗细（含环间分割线）+ 6dp 余量）。
-     * attach 后由 View 自报半径校正。
+     * cutout 半径 + EDGE_GAP + 各层粗细（层内取最大，含层间分割线）+ 6dp 余量）。
+     * 层数由布局决定：套环 3 层 / 半圆 2 层 / 三叉 1 层。attach 后由 View 自报半径校正。
      */
     private fun estimateRequiredRadiusPx(cfg: AnyCyCleConfig.Cfg): Float {
         val dm = appContext?.resources?.displayMetrics ?: return -1f
@@ -445,24 +445,54 @@ class MainHook : XposedModule() {
         val d = dm.density
         var cursor = estimateCutoutRadiusPx(sbh) + 1f * d
         val divW = cfg.dividerWidthDp * d
-        var drewAny = false
-        for (id in cfg.ringOrder) {
-            val ring: AnyCyCleConfig.RingCfg?
-            val bit: Int
-            when (id) {
-                AnyCyCleConfig.RING_WIFI_ID -> {
-                    ring = cfg.wifi; bit = AnyCyCleConfig.BIT_WIFI
-                }
-                AnyCyCleConfig.RING_SIM1_ID -> {
-                    ring = cfg.sim1; bit = AnyCyCleConfig.BIT_SIM1
-                }
-                else -> {
-                    ring = cfg.sim2; bit = AnyCyCleConfig.BIT_SIM2
+
+        // 与 SignalRingView.planLayers 同口径：按布局把启用源分成层
+        val en = booleanArrayOf(
+            cfg.displayMask and AnyCyCleConfig.BIT_WIFI != 0,
+            cfg.displayMask and AnyCyCleConfig.BIT_SIM1 != 0,
+            cfg.displayMask and AnyCyCleConfig.BIT_SIM2 != 0,
+        )
+        val rank = IntArray(3)
+        cfg.ringOrder.forEachIndexed { i, id ->
+            rank[when (id) {
+                AnyCyCleConfig.RING_WIFI_ID -> 0
+                AnyCyCleConfig.RING_SIM1_ID -> 1
+                else -> 2
+            }] = i
+        }
+        fun strokeOf(id: Int): Float = when (id) {
+            0 -> cfg.wifi.strokeDp
+            1 -> cfg.sim1.strokeDp
+            else -> cfg.sim2.strokeDp
+        }
+        val layers: List<List<Int>> = when (cfg.layoutMode) {
+            AnyCyCleConfig.LAYOUT_TRI, AnyCyCleConfig.LAYOUT_TRI_I ->
+                listOf(listOf(0, 1, 2).sortedBy { rank[it] })
+            AnyCyCleConfig.LAYOUT_NESTED ->
+                (0..2).sortedBy { rank[it] }.filter { en[it] }.map { listOf(it) }
+            else -> {
+                // half_*：SIM 组合环 + WiFi 环（内外由嵌套顺序决定）
+                val combo = if (rank[1] < rank[2]) listOf(1, 2) else listOf(2, 1)
+                val anySim = en[1] || en[2]
+                val wifiInner = if (en[1] && en[2]) rank[0] < minOf(rank[1], rank[2])
+                else if (en[1]) rank[0] < rank[1] else rank[0] < rank[2]
+                if (wifiInner) {
+                    listOfNotNull(if (en[0]) listOf(0) else null, if (anySim) combo else null)
+                } else {
+                    listOfNotNull(if (anySim) combo else null, if (en[0]) listOf(0) else null)
                 }
             }
-            if (ring == null || cfg.displayMask and bit == 0) continue
+        }
+        var drewAny = false
+        for (layer in layers) {
+            var stroke = 0f
+            for (id in layer) {
+                if (!en[id]) continue
+                stroke = maxOf(stroke, maxOf(strokeOf(id) * d, 1f))
+            }
+            if (stroke <= 0f) continue
             if (drewAny && divW > 0.5f) cursor += divW
-            cursor += maxOf(ring.strokeDp * d, 1f)
+            cursor += stroke
             drewAny = true
         }
         return cursor + 6f * d
@@ -480,6 +510,10 @@ class MainHook : XposedModule() {
         o.put("divColor", cfg.dividerColor)
         // 嵌套顺序（内 → 外），SignalRingView 按此从挖孔边缘向外堆叠
         o.put("order", JSONArray(cfg.ringOrder))
+        // 环布局（多源共环）：半圆 = SIM 组合环 + WiFi 套环；三叉 = 三源同环
+        o.put("layout", cfg.layoutMode)
+        o.put("lrot", cfg.layoutRotationDeg.toDouble())
+        o.put("lgap", cfg.layoutGapDeg.toDouble())
         o.put("wifi", JSONObject(AnyCyCleConfig.ringToJson(cfg.wifi)))
         o.put("sim1", JSONObject(AnyCyCleConfig.ringToJson(cfg.sim1)))
         o.put("sim2", JSONObject(AnyCyCleConfig.ringToJson(cfg.sim2)))
